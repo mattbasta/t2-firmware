@@ -252,7 +252,7 @@ class Tessel {
     // This may be expanded in the future to enable PWM on more pins
     const TCC_ID = 0;
 
-    const packet = new Buffer(4);
+    const packet = Buffer.alloc(4);
     // Write the command id first
     packet.writeUInt8(CMD.PWM_PERIOD, 0);
     // Write our prescalar to the top 4 bits and TCC id to the bottom 4 bits
@@ -344,12 +344,13 @@ class Port extends EventEmitter {
     // therefore should be allow to proceed.
     this.sock.isAllowedToClose = false;
 
-    let replyBuf = new Buffer(0);
+    let replyBuf = Buffer.alloc(0);
 
     this.sock.on('readable', () => {
       let queued;
       // This value can potentially be `null`.
-      const available = new Buffer(this.sock.read() || 0);
+      const raw = this.sock.read();
+      const available = raw ? Buffer.from(raw) : Buffer.alloc(0);
 
       // Copy incoming data into the reply buffer
       replyBuf = Buffer.concat([replyBuf, available]);
@@ -613,7 +614,7 @@ class Port extends EventEmitter {
 
   sync(callback) {
     if (callback) {
-      this.sock.write(new Buffer([CMD.ECHO, 1, 0x88]));
+      this.sock.write(Buffer.from([CMD.ECHO, 1, 0x88]));
       this.enqueue({
         size: 1,
         callback
@@ -623,13 +624,13 @@ class Port extends EventEmitter {
 
   command(data, callback) {
     this.cork();
-    this.sock.write(new Buffer(data));
+    this.sock.write(Buffer.from(data));
     this.sync(callback);
     this.uncork();
   }
 
   status(data, callback) {
-    this.sock.write(new Buffer(data));
+    this.sock.write(Buffer.from(data));
     this.enqueue({
       size: 0,
       callback,
@@ -650,7 +651,7 @@ class Port extends EventEmitter {
     while (offset < data.length) {
       chunk = data.slice(offset, offset + 255);
 
-      this.sock.write(new Buffer([CMD.TX, chunk.length]));
+      this.sock.write(Buffer.from([CMD.TX, chunk.length]));
       this.sock.write(chunk);
 
       offset += 255;
@@ -665,7 +666,7 @@ class Port extends EventEmitter {
       throw new RangeError('Buffer size must be within 1-255');
     }
 
-    this.sock.write(new Buffer([CMD.RX, len]));
+    this.sock.write(Buffer.from([CMD.RX, len]));
     this.enqueue({
       size: len,
       callback,
@@ -680,7 +681,7 @@ class Port extends EventEmitter {
     }
 
     this.cork();
-    this.sock.write(new Buffer([CMD.TXRX, len]));
+    this.sock.write(Buffer.from([CMD.TXRX, len]));
     this.sock.write(buf);
     this.enqueue({
       size: len,
@@ -853,7 +854,7 @@ class Pin extends EventEmitter {
 
   _readPin(cmd, callback) {
     this.port.cork();
-    this.port.sock.write(new Buffer([cmd, this.pin]));
+    this.port.sock.write(Buffer.from([cmd, this.pin]));
     this.port.enqueue({
       size: 0,
       callback: (error, data) => callback(error, data === REPLY.HIGH ? 1 : 0),
@@ -918,7 +919,7 @@ class Pin extends EventEmitter {
       throw new Error('analogPin.read is async, pass in a callback to get the value');
     }
 
-    this.port.sock.write(new Buffer([CMD.ANALOG_READ, this.pin]));
+    this.port.sock.write(Buffer.from([CMD.ANALOG_READ, this.pin]));
     this.port.enqueue({
       size: 2,
       callback(err, data) {
@@ -940,7 +941,7 @@ class Pin extends EventEmitter {
       throw new RangeError('Analog write must be between 0 and 1');
     }
 
-    this.port.sock.write(new Buffer([CMD.ANALOG_WRITE, data >> 8, data & 0xff]));
+    this.port.sock.write(Buffer.from([CMD.ANALOG_WRITE, data >> 8, data & 0xff]));
     return this;
   }
 
@@ -963,7 +964,7 @@ class Pin extends EventEmitter {
     // Calculate number of ticks for specified duty cycle
     const dutyCycleTicks = Math.floor(dutyCycle * pwmBankSettings.period);
     // Construct packet
-    const packet = new Buffer([CMD.PWM_DUTY_CYCLE, this.pin, dutyCycleTicks >> 8, dutyCycleTicks & 0xff]);
+    const packet = Buffer.from([CMD.PWM_DUTY_CYCLE, this.pin, dutyCycleTicks >> 8, dutyCycleTicks & 0xff]);
 
     // Write it to the socket
     this.port.sock.write(packet, callback);

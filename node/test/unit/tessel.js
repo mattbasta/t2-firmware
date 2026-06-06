@@ -565,7 +565,7 @@ exports['Tessel.Port'] = {
     test.done();
   },
 
-  'socket event:error' (test) {
+  'socket event:error'(test) {
     test.expect(2);
 
     const port = new Tessel.Port('foo', '/foo/bar/baz', this.tessel);
@@ -580,7 +580,7 @@ exports['Tessel.Port'] = {
     test.done();
   },
 
-  'socket event:end' (test) {
+  'socket event:end'(test) {
     test.expect(2);
 
     const port = new Tessel.Port('foo', '/foo/bar/baz', this.tessel);
@@ -595,7 +595,7 @@ exports['Tessel.Port'] = {
     test.done();
   },
 
-  'socket event:close' (test) {
+  'socket event:close'(test) {
     test.expect(2);
 
     const port = new Tessel.Port('foo', '/foo/bar/baz', this.tessel);
@@ -843,7 +843,7 @@ exports['Tessel.Port.prototype'] = {
       this.socket.cork = sandbox.spy();
       this.socket.uncork = sandbox.spy();
       this.socket.write = sandbox.spy();
-      this.socket.read = sandbox.stub().returns(new Buffer([REPLY.DATA]));
+      this.socket.read = sandbox.stub().returns(Buffer.from([REPLY.DATA]));
       return this.socket;
     });
 
@@ -1094,7 +1094,7 @@ exports['Tessel.Port.prototype'] = {
   txLessThanByteTransferLimit(test) {
     test.expect(6);
 
-    const buffer = new Buffer(255);
+    const buffer = Buffer.alloc(255);
 
     this.cork = sandbox.stub(Tessel.Port.prototype, 'cork');
     this.sync = sandbox.stub(Tessel.Port.prototype, 'sync');
@@ -1108,7 +1108,7 @@ exports['Tessel.Port.prototype'] = {
     // The 2 call write sequence is called once
     test.equal(this.a.sock.write.callCount, 2);
 
-    test.ok(this.a.sock.write.firstCall.args[0].equals(new Buffer([CMD.TX, 255])));
+    test.ok(this.a.sock.write.firstCall.args[0].equals(Buffer.from([CMD.TX, 255])));
     test.ok(this.a.sock.write.lastCall.args[0].equals(buffer));
 
     test.done();
@@ -1117,7 +1117,7 @@ exports['Tessel.Port.prototype'] = {
   txGreaterThanByteTransferLimit(test) {
     test.expect(8);
 
-    const buffer = new Buffer(510);
+    const buffer = Buffer.alloc(510);
 
     this.cork = sandbox.stub(Tessel.Port.prototype, 'cork');
     this.sync = sandbox.stub(Tessel.Port.prototype, 'sync');
@@ -1132,10 +1132,10 @@ exports['Tessel.Port.prototype'] = {
     // is twice as many bytes as the transfer limit
     test.equal(this.a.sock.write.callCount, 4);
 
-    test.ok(this.a.sock.write.firstCall.args[0].equals(new Buffer([CMD.TX, 255])));
+    test.ok(this.a.sock.write.firstCall.args[0].equals(Buffer.from([CMD.TX, 255])));
     test.ok(this.a.sock.write.secondCall.args[0].equals(buffer.slice(0, 255)));
 
-    test.ok(this.a.sock.write.thirdCall.args[0].equals(new Buffer([CMD.TX, 255])));
+    test.ok(this.a.sock.write.thirdCall.args[0].equals(Buffer.from([CMD.TX, 255])));
     test.ok(this.a.sock.write.lastCall.args[0].equals(buffer.slice(255)));
 
     test.done();
@@ -1145,7 +1145,7 @@ exports['Tessel.Port.prototype'] = {
     test.expect(1);
 
     test.throws(() => {
-      this.a.tx(new Buffer(0));
+      this.a.tx(Buffer.alloc(0));
     }, RangeError);
 
     test.done();
@@ -1163,7 +1163,7 @@ exports['Tessel.Port.prototype'] = {
     this.a.rx(size, callback);
 
     test.equal(this.a.sock.write.callCount, 1);
-    test.ok(this.a.sock.write.lastCall.args[0].equals(new Buffer([CMD.RX, size])));
+    test.ok(this.a.sock.write.lastCall.args[0].equals(Buffer.from([CMD.RX, size])));
 
     test.equal(this.a.replyQueue.length, 1);
 
@@ -1206,7 +1206,7 @@ exports['Tessel.Port.prototype'] = {
     this.cork = sandbox.stub(Tessel.Port.prototype, 'cork');
     this.uncork = sandbox.stub(Tessel.Port.prototype, 'uncork');
 
-    const buffer = new Buffer(4);
+    const buffer = Buffer.alloc(4);
     const callback = sandbox.spy();
 
     this.a.txrx(buffer, callback);
@@ -1222,7 +1222,7 @@ exports['Tessel.Port.prototype'] = {
     test.equal(replyQueueEntry.size, buffer.length);
     test.equal(replyQueueEntry.callback, callback);
 
-    test.ok(this.a.sock.write.firstCall.args[0].equals(new Buffer([CMD.TXRX, buffer.length])));
+    test.ok(this.a.sock.write.firstCall.args[0].equals(Buffer.from([CMD.TXRX, buffer.length])));
     test.ok(this.a.sock.write.lastCall.args[0].equals(buffer));
 
     test.done();
@@ -1231,7 +1231,7 @@ exports['Tessel.Port.prototype'] = {
   txrxInvalidLengthZero(test) {
     test.expect(1);
 
-    const buffer = new Buffer(0);
+    const buffer = Buffer.alloc(0);
 
     test.throws(() => {
       this.a.txrx(buffer);
@@ -1243,7 +1243,7 @@ exports['Tessel.Port.prototype'] = {
   txrxInvalidLengthMax(test) {
     test.expect(1);
 
-    const buffer = new Buffer(256);
+    const buffer = Buffer.alloc(256);
 
     test.throws(() => {
       this.a.txrx(buffer);
@@ -1263,7 +1263,7 @@ exports['Tessel.Port Commands (handling incoming socket stream)'] = {
       this.socket.uncork = sandbox.spy();
       this.socket.write = sandbox.spy();
       // Stubbed as needed
-      this.socket.read = sandbox.stub().returns(new Buffer([REPLY.DATA]));
+      this.socket.read = sandbox.stub().returns(Buffer.from([REPLY.DATA]));
       return this.socket;
     });
 
@@ -1294,7 +1294,7 @@ exports['Tessel.Port Commands (handling incoming socket stream)'] = {
   replyhigh(test) {
     test.expect(1);
 
-    this.port.sock.read.returns(new Buffer([REPLY.HIGH]));
+    this.port.sock.read.returns(Buffer.from([REPLY.HIGH]));
     this.port.replyQueue.push({
       size: 0,
       callback(err, data) {
@@ -1309,7 +1309,7 @@ exports['Tessel.Port Commands (handling incoming socket stream)'] = {
   replylow(test) {
     test.expect(1);
 
-    this.port.sock.read.returns(new Buffer([REPLY.LOW]));
+    this.port.sock.read.returns(Buffer.from([REPLY.LOW]));
     this.port.replyQueue.push({
       size: 0,
       callback(err, data) {
@@ -1324,7 +1324,7 @@ exports['Tessel.Port Commands (handling incoming socket stream)'] = {
   replydata(test) {
     test.expect(4);
 
-    this.port.sock.read.returns(new Buffer([REPLY.DATA, 0xff, 0x7f, 0x3f, 0x1f]));
+    this.port.sock.read.returns(Buffer.from([REPLY.DATA, 0xff, 0x7f, 0x3f, 0x1f]));
     this.port.replyQueue.push({
       size: 4,
       callback(err, data) {
@@ -1353,10 +1353,10 @@ exports['Tessel.Port Commands (handling incoming socket stream)'] = {
       },
     });
 
-    this.port.sock.read.returns(new Buffer([REPLY.DATA, 0xff, 0x7f]));
+    this.port.sock.read.returns(Buffer.from([REPLY.DATA, 0xff, 0x7f]));
     this.port.sock.emit('readable');
 
-    this.port.sock.read.returns(new Buffer([0x3f, 0x1f]));
+    this.port.sock.read.returns(Buffer.from([0x3f, 0x1f]));
     this.port.sock.emit('readable');
   },
 
@@ -1365,7 +1365,7 @@ exports['Tessel.Port Commands (handling incoming socket stream)'] = {
 
     test.throws(() => {
       this.port.replyQueue.length = 0;
-      this.port.sock.read.returns(new Buffer([REPLY.HIGH]));
+      this.port.sock.read.returns(Buffer.from([REPLY.HIGH]));
       this.port.sock.emit('readable');
     }, Error);
 
@@ -1383,7 +1383,7 @@ exports['Tessel.Port Commands (handling incoming socket stream)'] = {
         callback: spy,
       });
 
-      this.port.sock.read.returns(new Buffer([REPLY.DATA, 0xff, 0x7f]));
+      this.port.sock.read.returns(Buffer.from([REPLY.DATA, 0xff, 0x7f]));
       this.port.sock.emit('readable');
     }, Error);
 
@@ -1401,10 +1401,10 @@ exports['Tessel.Port Commands (handling incoming socket stream)'] = {
     this.port.pin[2].once('low', low);
     this.port.pin[5].once('high', high);
 
-    this.port.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + 2]));
+    this.port.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + 2]));
     this.port.sock.emit('readable');
 
-    this.port.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + 5]));
+    this.port.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + 5]));
     this.port.sock.emit('readable');
 
     test.equal(low.callCount, 1);
@@ -1424,7 +1424,7 @@ exports['Tessel.Port Commands (handling incoming socket stream)'] = {
       test.done();
     });
 
-    this.port.sock.read.returns(new Buffer([REPLY.MIN_ASYNC]));
+    this.port.sock.read.returns(Buffer.from([REPLY.MIN_ASYNC]));
     this.port.sock.emit('readable');
   },
 };
@@ -1438,7 +1438,7 @@ exports['Tessel.Pin'] = {
       socket.uncork = sandbox.spy();
       socket.write = sandbox.spy();
       // Stubbed as needed
-      socket.read = sandbox.stub().returns(new Buffer([REPLY.DATA]));
+      socket.read = sandbox.stub().returns(Buffer.from([REPLY.DATA]));
       return socket;
     });
 
@@ -1715,10 +1715,10 @@ exports['Tessel.Pin'] = {
       test.equal(this.b.pin[pinIndex].interruptMode, 'high');
 
       // Simulate receipt of pin state changes
-      this.a.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
+      this.a.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
       this.a.sock.emit('readable');
 
-      this.b.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
+      this.b.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
       this.b.sock.emit('readable');
     }, this);
 
@@ -1739,10 +1739,10 @@ exports['Tessel.Pin'] = {
       test.equal(this.b.pin[pinIndex].interruptMode, 'low');
 
       // Simulate receipt of pin state changes
-      this.a.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
+      this.a.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
       this.a.sock.emit('readable');
 
-      this.b.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
+      this.b.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
       this.b.sock.emit('readable');
     }, this);
 
@@ -1763,10 +1763,10 @@ exports['Tessel.Pin'] = {
       test.equal(this.b.pin[pinIndex].interruptMode, 'change');
 
       // Simulate receipt of pin state changes
-      this.a.sock.read.returns(new Buffer([(REPLY.ASYNC_PIN_CHANGE_N + pinIndex) | (1 << 3)]));
+      this.a.sock.read.returns(Buffer.from([(REPLY.ASYNC_PIN_CHANGE_N + pinIndex) | (1 << 3)]));
       this.a.sock.emit('readable');
 
-      this.b.sock.read.returns(new Buffer([(REPLY.ASYNC_PIN_CHANGE_N + pinIndex) | (1 << 3)]));
+      this.b.sock.read.returns(Buffer.from([(REPLY.ASYNC_PIN_CHANGE_N + pinIndex) | (1 << 3)]));
       this.b.sock.emit('readable');
     }, this);
 
@@ -1787,10 +1787,10 @@ exports['Tessel.Pin'] = {
       test.equal(this.b.pin[pinIndex].interruptMode, 'change');
 
       // Simulate receipt of pin state changes
-      this.a.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
+      this.a.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
       this.a.sock.emit('readable');
 
-      this.b.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
+      this.b.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
       this.b.sock.emit('readable');
     }, this);
 
@@ -1811,10 +1811,10 @@ exports['Tessel.Pin'] = {
       test.equal(this.b.pin[pinIndex].interruptMode, 'change');
 
       // Simulate receipt of pin state changes
-      this.a.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
+      this.a.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
       this.a.sock.emit('readable');
 
-      this.b.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
+      this.b.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
       this.b.sock.emit('readable');
     }, this);
 
@@ -1835,10 +1835,10 @@ exports['Tessel.Pin'] = {
       test.equal(this.b.pin[pinIndex].interruptMode, 'change');
 
       // Simulate receipt of pin state changes
-      this.a.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
+      this.a.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
       this.a.sock.emit('readable');
 
-      this.b.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
+      this.b.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
       this.b.sock.emit('readable');
     }, this);
 
@@ -1864,10 +1864,10 @@ exports['Tessel.Pin'] = {
       test.equal(this.b.pin[pinIndex].interruptMode, 'change');
 
       // Simulate receipt of pin state changes
-      this.a.sock.read.returns(new Buffer([(REPLY.ASYNC_PIN_CHANGE_N + pinIndex) | (1 << 3)]));
+      this.a.sock.read.returns(Buffer.from([(REPLY.ASYNC_PIN_CHANGE_N + pinIndex) | (1 << 3)]));
       this.a.sock.emit('readable');
 
-      this.b.sock.read.returns(new Buffer([(REPLY.ASYNC_PIN_CHANGE_N + pinIndex) | (1 << 3)]));
+      this.b.sock.read.returns(Buffer.from([(REPLY.ASYNC_PIN_CHANGE_N + pinIndex) | (1 << 3)]));
       this.b.sock.emit('readable');
     }, this);
 
@@ -1896,7 +1896,7 @@ exports['Tessel.Pin'] = {
       this.a.pin[pinIndex].removeListener('change', spy);
       test.equal(this.a.pin[pinIndex].interruptMode, null);
 
-      this.a.sock.read.returns(new Buffer([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
+      this.a.sock.read.returns(Buffer.from([REPLY.ASYNC_PIN_CHANGE_N + pinIndex]));
       this.a.sock.emit('readable');
     }, this);
 
@@ -2151,7 +2151,7 @@ exports['Tessel.Pin'] = {
       test.done();
     });
 
-    this.a.sock.read.returns(new Buffer([0x84, value & 0xFF, value >> 8]));
+    this.a.sock.read.returns(Buffer.from([0x84, value & 0xFF, value >> 8]));
     this.a.sock.emit('readable');
   },
 
@@ -2166,7 +2166,7 @@ exports['Tessel.Pin'] = {
       test.done();
     });
 
-    this.a.sock.read.returns(new Buffer([0x84, value & 0xFF, value >> 8]));
+    this.a.sock.read.returns(Buffer.from([0x84, value & 0xFF, value >> 8]));
     this.a.sock.emit('readable');
   },
 
@@ -2691,7 +2691,7 @@ exports['Tessel.UART'] = {
     test.expect(4);
 
     const uart = new this.port.UART();
-    const data = new Buffer([0xFF]);
+    const data = Buffer.from([0xFF]);
     const callback = () => {};
     uart._write(data, null, callback);
 
@@ -2815,14 +2815,14 @@ exports['Tessel.UART'] = {
     const u1 = new this.port.UART();
 
     // Buffers which we'll emit as mocked incoming UART data
-    const payload = new Buffer([0x00, 0x0F, 0xF0, 0xFF]);
-    const header = new Buffer([Tessel.REPLY.ASYNC_UART_RX, payload.length]);
+    const payload = Buffer.from([0x00, 0x0F, 0xF0, 0xFF]);
+    const header = Buffer.from([Tessel.REPLY.ASYNC_UART_RX, payload.length]);
 
     // Only return our test buffer on the first call, otherwise empty buff
     let called = false;
     this.socket.read = () => {
       if (called) {
-        return new Buffer([]);
+        return Buffer.from([]);
       }
       called = true;
 
@@ -2848,8 +2848,8 @@ exports['Tessel.UART'] = {
     // Create our Tessel port
     const u1 = new this.port.UART();
 
-    const payload = new Buffer([0x01, 0x02, 0x03, 0x04]);
-    const header = new Buffer([Tessel.REPLY.ASYNC_UART_RX, payload.length]);
+    const payload = Buffer.from([0x01, 0x02, 0x03, 0x04]);
+    const header = Buffer.from([Tessel.REPLY.ASYNC_UART_RX, payload.length]);
     let called = false;
     this.socket.read = () => {
       if (called) {
@@ -3185,7 +3185,7 @@ exports['Tessel.SPI'] = {
     spi.chipSelect.low.reset();
     spi.chipSelect.high.reset();
 
-    const data = new Buffer([0xFF]);
+    const data = Buffer.from([0xFF]);
     const callback = () => {};
 
     spi.send(data, callback);
@@ -3245,7 +3245,7 @@ exports['Tessel.SPI'] = {
     spi.chipSelect.low.reset();
     spi.chipSelect.high.reset();
 
-    const data = new Buffer([0xFF]);
+    const data = Buffer.from([0xFF]);
     const callback = () => {};
 
     spi.transfer(data, callback);
