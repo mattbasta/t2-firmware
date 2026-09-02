@@ -2,7 +2,7 @@ TARGETS = firmware boot test_rig test_rig_boot
 BUILD = build
 
 all: $(TARGETS)
-.PHONY: all clean update
+.PHONY: all clean update check-deps
 
 ATMEL_PATH = deps/sam0
 CMSIS_PATH = $(ATMEL_PATH)/cmsis/samd21
@@ -41,5 +41,8 @@ clean:
 
 update:
 	git submodule update --init --recursive
+
+check-deps:
+	python3 scripts/deps-check.py
 
 print-%	: ; @echo $* = $($*)

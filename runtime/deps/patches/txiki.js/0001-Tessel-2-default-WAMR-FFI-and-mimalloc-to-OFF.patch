@@ -1,0 +1,48 @@
+From 382d0769dcf5bd98763885525f15fe9cfe6230d8 Mon Sep 17 00:00:00 2001
+From: Matt Basta <mattbasta@mac.lan>
+Date: Sun, 30 Aug 2026 17:45:57 -0400
+Subject: [PATCH] Tessel 2: default WAMR, FFI, and mimalloc to OFF
+
+Build-default flips for the Tessel 2 runtime (MIPS 24KEc, soft-float,
+64MB/32MB, OpenWrt/musl), per the dependency policy in
+tessel/t2-firmware runtime/DEPENDENCIES.md:
+
+- BUILD_WITH_WASM=OFF: no Node-shell use case; size and attack surface;
+  MIPS untested in WAMR upstream.
+- BUILD_WITH_FFI=OFF: the only system (non-vendored) dependency; shaky
+  mips-o32 soft-float assembly history; hardware access uses spid's
+  Unix domain socket instead.
+- BUILD_WITH_MIMALLOC=OFF: designed for 64-bit servers; musl mallocng
+  fits a 32-bit/64MB target, and host/target heap behavior stays
+  identical.
+
+SQLite stays ON (ships in the default image).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ CMakeLists.txt | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b13d0cd..2b11106 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -55,12 +55,12 @@ macro(xoption OPTION_NAME OPTION_TEXT OPTION_DEFAULT)
+     message(STATUS "  ${OPTION_NAME}: ${${OPTION_NAME}}")
+ endmacro()
+ 
+-xoption(BUILD_WITH_MIMALLOC "If ON (default), build with mimalloc" ON)
+-xoption(BUILD_WITH_FFI "If ON (default), build with libffi (the tjs:ffi module)" ON)
++xoption(BUILD_WITH_MIMALLOC "If ON, build with mimalloc" OFF)
++xoption(BUILD_WITH_FFI "If ON, build with libffi (the tjs:ffi module)" OFF)
+ xoption(BUILD_WITH_ASAN "Build with AddressSanitizer" OFF)
+ xoption(BUILD_WITH_UBSAN "Build with UndefinedBehaviorSanitizer" OFF)
+ xoption(BUILD_WITH_GC_STRESS "Force a full GC before every JS allocation (QuickJS FORCE_GC_AT_MALLOC)" OFF)
+-xoption(BUILD_WITH_WASM "If ON (default), build with WASM/WAMR support" ON)
++xoption(BUILD_WITH_WASM "If ON, build with WASM/WAMR support" OFF)
+ xoption(BUILD_WITH_SQLITE "If ON (default), build with SQLite (the tjs:sqlite module)" ON)
+ xoption(BUILD_WITH_STRIP "If ON, strip the tjs binary after linking" OFF)
+ xoption(BUILD_WITH_LTO "If ON, enable link-time optimization" OFF)
+-- 
+2.50.1 (Apple Git-155)
+

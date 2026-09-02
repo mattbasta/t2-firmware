@@ -1,0 +1,171 @@
+# Dependency manifest for the Tessel 2 runtime.
+#
+# Single source of truth for every third-party component, the toolchain, and every
+# DENIED dependency (tombstones keep the rationale in the repo). Policy and admission
+# criteria: runtime/DEPENDENCIES.md. Checked by scripts/deps-check.py in CI.
+#
+# Fields:
+#   name       component name
+#   tier       0 = core spine, 1 = battery, 2 = harvested-then-owned, "D" = dev/CI
+#   intake     "submodule" | "transitive-submodule" | "in-tree" | "in-tree-via-txiki"
+#              | "harvest" | "toolchain"
+#   upstream   canonical upstream URL
+#   fork       our patched fork (submodule intake only), branch t2/v<ver>+tessel.<n>
+#   spdx       SPDX license id (allowlist: MIT, BSD-2-Clause, BSD-3-Clause,
+#              Apache-2.0, ISC, Zlib, 0BSD, Unlicense, blessing [sqlite public domain])
+#   status     "active" | "pending" (declared, not yet materialized) | "frozen"
+#   denied     true for tombstones (mutually exclusive with tier)
+#   linked_runtime_libs   extra NEEDED entries this dep is allowed to introduce
+#   breaks_if_removed     required for tier 1: what functionality dies
+#   harvest_paths         for tier 2: tree paths whose files need provenance headers
+#
+# Exact submodule SHAs live in runtime/deps/submodules.lock (diffed by CI), not here.
+
+schema = 1
+
+# ── Toolchain ────────────────────────────────────────────────────────────────
+
+[[dependency]]
+name = "openwrt-sdk"
+tier = 0
+intake = "toolchain"
+upstream = "https://downloads.openwrt.org/releases/"
+spdx = "GPL-2.0-only"          # toolchain only; nothing GPL links into the binary
+status = "pending"             # Phase 0 pins the exact SDK tarball
+url = ""                       # filled by the Phase 0 pin; read by scripts/fetch-sdk.sh
+sha256 = ""
+notes = "gcc/musl soft-float mipsel_24kc SDK. Pinned like a dependency; the sha256-verified tarball is the only permitted network fetch besides git submodules."
+
+# ── Tier 0 — core spine ──────────────────────────────────────────────────────
+
+[[dependency]]
+name = "txiki.js"
+tier = 0
+intake = "submodule"
+path = "runtime/deps/txiki.js"
+upstream = "https://github.com/saghul/txiki.js"
+fork = "https://github.com/mattbasta/txiki.js"
+spdx = "MIT"
+status = "active"
+upstream_base = "1f8b99f75a4119b49e72610e73ed2b08abed9568"  # upstream master at fork
+notes = "Platform base (WinterTC surface, build system). Carries quickjs-ng, libuv, mbedTLS, libwebsockets transitively via its own submodules — one source of truth for those pins. Fork flips WAMR/FFI/mimalloc defaults OFF; patches mirrored in runtime/deps/patches/txiki.js/."
+
+[[dependency]]
+name = "quickjs-ng"
+tier = 0
+intake = "transitive-submodule"
+via = "txiki.js"
+upstream = "https://github.com/quickjs-ng/quickjs"
+spdx = "MIT"
+status = "active"
+notes = "The JavaScript engine. No MIPS CI upstream — our QEMU-mipsel test262 job covers the gap; portability fixes go upstream."
+
+[[dependency]]
+name = "libuv"
+tier = 0
+intake = "transitive-submodule"
+via = "txiki.js"
+upstream = "https://github.com/libuv/libuv"
+spdx = "MIT"
+status = "active"
+notes = "Event loop and I/O. Proven on this exact board by every Node 4/8 Tessel firmware."
+
+[[dependency]]
+name = "mbedtls"
+tier = 0
+intake = "transitive-submodule"
+via = "txiki.js"
+upstream = "https://github.com/Mbed-TLS/mbedtls"
+spdx = "Apache-2.0"
+status = "active"
+notes = "TLS for node:tls/https and the primitive source for node:crypto. Embedded-first, ownable — chosen over OpenSSL deliberately."
+
+[[dependency]]
+name = "llhttp"
+tier = 0
+intake = "in-tree"
+path = "runtime/deps/llhttp"
+upstream = "https://github.com/nodejs/llhttp"
+spdx = "MIT"
+status = "pending"             # vendored when node:http work starts (strategy Phase 3)
+notes = "Canonical Node HTTP parser. Vendor the RELEASE TARBALL's generated C only; the TypeScript generator never runs in our build. Run with lenient flags for era compatibility."
+
+# ── Tier 1 — batteries ───────────────────────────────────────────────────────
+
+[[dependency]]
+name = "ada"
+tier = 1
+intake = "in-tree-via-txiki"
+upstream = "https://github.com/ada-url/ada"
+spdx = "Apache-2.0"
+status = "active"
+breaks_if_removed = "WHATWG URL/URLSearchParams (url.URL, fetch URL handling). Legacy url.parse() is first-party JS and would survive."
+notes = "C++ — see waiver. Build with -fno-exceptions -fno-rtti where feasible; libstdc++ statically linked; size cost recorded at Phase 0."
+
+  [[dependency.waiver]]
+  rule = "Tier 1 language: C only"
+  reason = "No credible C implementation of the WHATWG URL spec exists; writing one is worse than the waiver."
+  approved_by = "mattbasta"
+  review_by = 2027-09-01
+
+[[dependency]]
+name = "miniz"
+tier = 1
+intake = "in-tree-via-txiki"
+upstream = "https://github.com/richgel999/miniz"
+spdx = "MIT"
+status = "active"
+breaks_if_removed = "node:zlib (via first-party zlib-api shim), CompressionStream/DecompressionStream."
+notes = "Small enough to own if upstream freezes."
+
+[[dependency]]
+name = "tweetnacl"
+tier = 1
+intake = "in-tree-via-txiki"
+upstream = "https://tweetnacl.cr.yp.to/"
+spdx = "Unlicense"
+status = "active"
+breaks_if_removed = "txiki stdlib crypto surfaces that predate our mbedTLS-backed node:crypto."
+notes = "CONTAINED: node:crypto builds on mbedTLS, never on this — reference-implementation NaCl is too slow on a 580 MHz soft-float core to be load-bearing. Frozen upstream; ownable."
+
+[[dependency]]
+name = "libwebsockets"
+tier = 1
+intake = "transitive-submodule"
+via = "txiki.js"
+upstream = "https://github.com/warmcat/libwebsockets"
+spdx = "MIT"
+status = "active"
+removal_candidate = true
+breaks_if_removed = "txiki's fetch() client and tjs.serve HTTP/WS server — until first-party node:http on llhttp+libuv+mbedTLS exists."
+notes = "Re-evaluate at strategy Phase 3: once first-party http/ws land, this may be pure size cost."
+
+[[dependency]]
+name = "sqlite3"
+tier = 1
+intake = "in-tree-via-txiki"
+upstream = "https://sqlite.org/"
+spdx = "blessing"              # public domain
+status = "active"
+breaks_if_removed = "node:sqlite parity and on-device storage."
+notes = "SHIPS IN THE DEFAULT IMAGE (owner decision, 2026-08-30): ~900 KB flash accepted for storage capability. C89, famously 32-bit clean."
+
+# ── Tombstones — denied dependencies ─────────────────────────────────────────
+
+[[dependency]]
+name = "wamr"
+denied = true
+upstream = "https://github.com/bytecodealliance/wasm-micro-runtime"
+notes = "BUILD_WITH_WASM=OFF in the txiki fork. No Node-shell use case; large size and attack surface; MIPS is untested upstream. WASM support becomes a documented ECMA-429 deviation. Re-admission requires a waiver PR."
+
+[[dependency]]
+name = "libffi"
+denied = true
+upstream = "https://github.com/libffi/libffi"
+notes = "BUILD_WITH_FFI=OFF in the txiki fork. Was the ONLY system (non-vendored) library in txiki — denying it makes the no-system-libraries rule absolute. Per-arch assembly with a shaky mips-o32 soft-float history. Tessel hardware access goes over spid's Unix domain socket in pure JS; no FFI needed."
+
+[[dependency]]
+name = "mimalloc"
+denied = true
+upstream = "https://github.com/microsoft/mimalloc"
+notes = "BUILD_WITH_MIMALLOC=OFF everywhere, host included, so host and target heap behavior match. Designed for 64-bit servers: large aligned arenas, per-thread heaps, heavy atomics — wrong for a 32-bit/64 MB box. musl 1.2.5's mallocng is compact, hardened, and tuned for exactly this class."

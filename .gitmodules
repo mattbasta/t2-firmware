@@ -4,3 +4,7 @@
 [submodule "deps/usb"]
 	path = deps/usb
 	url = https://github.com/nonolith/USB-XMEGA/
+[submodule "runtime/deps/txiki.js"]
+	path = runtime/deps/txiki.js
+	url = https://github.com/mattbasta/txiki.js
+	branch = t2/v26.6.0+tessel.1

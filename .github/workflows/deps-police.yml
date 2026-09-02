@@ -1,0 +1,23 @@
+# Dependency-policy enforcement — see runtime/DEPENDENCIES.md.
+#
+# Fails when: a submodule under runtime/deps/ arrives or moves without a
+# lock/manifest update; a manifest license is off the allowlist; a waiver has
+# expired; the runtime declares npm runtime dependencies; a harvested file lacks
+# its provenance header; or THIRD_PARTY_NOTICES.md is stale.
+
+name: deps-police
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  deps-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        # Submodules deliberately NOT initialized: deps-check reads gitlink SHAs
+        # from the index, so pin drift is caught without cloning anything.
+      - name: Run dependency policy checks
+        run: python3 scripts/deps-check.py

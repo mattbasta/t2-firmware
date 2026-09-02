@@ -1,0 +1,105 @@
+# Runtime CI — host build, offline mipsel cross-build, QEMU smoke, size gate.
+#
+# Jobs guard on what has actually landed (txiki fork submodule, pinned SDK), so
+# this workflow is green during scaffolding and each gate arms itself as the
+# corresponding piece arrives. The cross-build runs with networking removed
+# (unshare --net) after dependencies are fetched: "no network at build time" is
+# enforced, not requested — see runtime/DEPENDENCIES.md.
+
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  SIZE_BUDGET_HARD_KB: 8192   # stripped mipsel binary: hard fail above 8 MB
+  SIZE_BUDGET_WARN_KB: 7168   # warn above 7 MB
+
+jobs:
+  runtime-host:
+    name: runtime host build + tests (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - name: Check whether the runtime tree has landed
+        id: guard
+        run: |
+          if [ -f runtime/deps/txiki.js/CMakeLists.txt ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "runtime not yet landed — host build skipped"
+          fi
+      - name: Build (host)
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          cmake -S runtime/deps/txiki.js -B build/host \
+            -DBUILD_WITH_WASM=OFF -DBUILD_WITH_FFI=OFF -DBUILD_WITH_MIMALLOC=OFF
+          cmake --build build/host -j"$(nproc)"
+      - name: Test (host)
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          if [ -x runtime/scripts/test-host.sh ]; then
+            runtime/scripts/test-host.sh build/host
+          else
+            build/host/tjs eval "console.log('host smoke ok')"
+          fi
+
+  runtime-cross:
+    name: runtime cross-build (mipsel_24kc, offline) + QEMU smoke + size gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
+      - name: Check whether the SDK is pinned and the runtime tree has landed
+        id: guard
+        run: |
+          status="$(python3 -c "
+          import tomllib
+          d = tomllib.load(open('runtime/deps/MANIFEST.toml','rb'))
+          print(next(x.get('status','') for x in d['dependency'] if x['name']=='openwrt-sdk'))
+          ")"
+          if [ "$status" = "active" ] && [ -f runtime/deps/txiki.js/CMakeLists.txt ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "cross-build not armed yet (sdk status: $status)"
+          fi
+      - name: Fetch pinned SDK (sha256-verified; the only network fetch)
+        if: steps.guard.outputs.ready == 'true'
+        run: scripts/fetch-sdk.sh build/sdk
+      - name: Cross-build with networking removed
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          sudo unshare --net -- \
+            sh -c 'runtime/scripts/build-cross.sh build/sdk build/mipsel'
+      - name: Size gate
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          BIN=build/mipsel/tjs
+          KB=$(( $(stat -c %s "$BIN") / 1024 ))
+          echo "stripped mipsel binary: ${KB} KB (warn ${SIZE_BUDGET_WARN_KB}, hard ${SIZE_BUDGET_HARD_KB})" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$KB" -le "$SIZE_BUDGET_HARD_KB" ] || { echo "size budget EXCEEDED"; exit 1; }
+          [ "$KB" -le "$SIZE_BUDGET_WARN_KB" ] || echo "::warning::binary above soft size budget (${KB} KB)"
+      - name: NEEDED allowlist (no system libraries)
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          readelf -d build/mipsel/tjs | awk '/NEEDED/{print $NF}' | tr -d '[]' | sort > needed.txt
+          cat needed.txt
+          # Allowed: musl libc, libgcc_s, and libatomic when recorded in the manifest.
+          if grep -vE '^(libc\.so|ld-musl-.*|libgcc_s\.so.*|libatomic\.so.*)$' needed.txt; then
+            echo "unexpected dynamic dependency — see runtime/DEPENDENCIES.md (no system libraries)"
+            exit 1
+          fi
+      - name: QEMU smoke
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          sudo apt-get install -y --no-install-recommends qemu-user-static
+          qemu-mipsel-static build/mipsel/tjs eval "console.log('qemu smoke ok')"
+          if [ -x runtime/scripts/test-qemu.sh ]; then
+            runtime/scripts/test-qemu.sh build/mipsel
+          fi
