@@ -13,6 +13,8 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * *'   # nightly: full QEMU test262 numerics slice
 
 env:
   SIZE_BUDGET_HARD_KB: 8192   # stripped mipsel binary: hard fail above 8 MB
@@ -96,11 +98,10 @@ jobs:
             echo "unexpected dynamic dependency — see runtime/DEPENDENCIES.md (no system libraries)"
             exit 1
           fi
-      - name: QEMU smoke
+      - name: QEMU tests (numerics probe per PR; test262 numerics slice on schedule/dispatch)
         if: steps.guard.outputs.ready == 'true'
+        env:
+          TEST262_QUICK: ${{ github.event_name == 'pull_request' && '1' || '0' }}
         run: |
           sudo apt-get install -y --no-install-recommends qemu-user-static
-          qemu-mipsel-static build/mipsel/tjs eval "console.log('qemu smoke ok')"
-          if [ -x runtime/scripts/test-qemu.sh ]; then
-            runtime/scripts/test-qemu.sh build/mipsel
-          fi
+          runtime/scripts/test-qemu.sh build/mipsel build/sdk
