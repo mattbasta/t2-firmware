@@ -39,7 +39,7 @@ jobs:
       - name: Build (host)
         if: steps.guard.outputs.present == 'true'
         run: |
-          cmake -S runtime/deps/txiki.js -B build/host \
+          cmake -S runtime -B build/host \
             -DBUILD_WITH_WASM=OFF -DBUILD_WITH_FFI=OFF -DBUILD_WITH_MIMALLOC=OFF
           cmake --build build/host -j"$(nproc)"
       - name: Test (host)

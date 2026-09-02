@@ -11,6 +11,8 @@ definitions come from the strategy document; the dependency rules from
 | Cross-compiles with the pinned OpenWrt SDK, offline | **Pass** | Daddy, 2026-09-02 |
 | Static binary ≤ 8 MB | **Pass — 6,164,468 bytes** (6.02 MB), sqlite on, no LTO/MinSizeRel yet | Daddy |
 | Numerics correct on 32-bit soft-float | **Pass under QEMU** — 0/4,588 test262 errors in the numerics slice; probe values exact | QEMU (qemu-mipsel 8.2) |
+| Engine conformance on MIPS matches x86 | **Pass** — full test262 byte-identical to the native build (38/43,034 upstream-known failures) | QEMU |
+| Platform layer (libuv/mbedTLS/sqlite/…) works on MIPS | **Pass with one fix** — txiki suite: 217 pass; the only MIPS defect (static-musl `dlsym` crash) is fixed by `runtime/src/static_dl_stub.c` | QEMU |
 | Numerics correct on the real 24KEc (pre-NaN2008 core) | **Pending — needs the board attached** | — |
 | Startup ≥ 5× faster than Node 8, RSS ≤ ⅓ | **Pending — needs the board** (QEMU timings are not representative) | — |
 | spid handshake from the runtime | **Pending — needs the board** | — |
@@ -51,6 +53,48 @@ definitions come from the strategy document; the dependency rules from
   native x86-64 build of the same quickjs-ng commit** (the logs differ only in
   timing lines). Every failure is an upstream-known one; nothing is
   MIPS-specific. Wall time under QEMU with 32 threads: ~21 s.
+
+## txiki.js test suite under QEMU (380 files, run one at a time)
+
+The runner itself (`tjs test`) cannot be used under qemu-user: it spawns dozens
+of `tjs` children, and qemu-user without binfmt_misc cannot `execve` a MIPS
+binary (`ENOEXEC`). Running each file with `tjs run` instead, and comparing
+against the same fork built natively on x86-64 (278 OK / 64 FAIL / 38 SKIP —
+the FAILs are the FFI tests, which the runner does not feature-skip):
+
+- **217 pass** on mipsel.
+- **28 `test-wasm-*` fail** — expected: WASM is off and `tjs run` bypasses the
+  runner's feature-skip list. The host run skips them.
+- **1 `test-exec.js` and the spawn-of-self tests fail with `ENOEXEC`/`EPERM`**
+  — the binfmt limitation above. On a CI runner with `sudo apt-get install
+  qemu-user-static`, binfmt_misc is registered and these should run.
+- **73 segfaulted** before the fix below. **This was the one real MIPS defect
+  found in Phase 0.**
+
+### Defect: `dlsym()` crashes in any static musl binary on MIPS
+
+Every crashing test spawned a subprocess. The gdb backtrace under qemu
+(`-g` + the SDK's `mipsel-openwrt-linux-gdb` on an unstripped build) ends in
+`__dlsym_time64` at `src/ldso/mips/dlsym.s:14`, jumping to a garbage address.
+A three-line C program calling `dlsym(RTLD_DEFAULT, "printf")` reproduces it
+with `-static` and `-static-pie`; only a dynamic link works. musl's MIPS
+`dlsym` is an assembly shim that derives `$gp` from `$t9` per the PIC calling
+convention, which static non-PIC callers never set up.
+
+Callers in our link: libuv (one startup probe for
+`posix_spawn_file_actions_addchdir`, plus `uv_dlopen`) and sqlite's extension
+loader. Fix: `runtime/src/static_dl_stub.c` defines `__dlsym_time64`/`dlsym`
+returning NULL — the answer musl gives for an unknown symbol, and the only
+possible answer in a static binary — and `runtime/CMakeLists.txt` links it
+when `T2_STATIC_DL_STUB=ON` (set by `build-cross.sh`). With the stub, `spawn`
+works and the 73 tests run. Worth reporting to musl (static MIPS `dlsym`) and
+libuv (prefer the direct symbol on musl); tracked as a follow-up.
+
+### QEMU-only limitations (not runtime bugs)
+
+- `clone(CLONE_VM)`/`vfork` does not share memory under qemu-user
+  (libuv's own probe reports `works=0` and falls back to `fork`).
+- No binfmt_misc without root → a MIPS binary cannot spawn another MIPS binary.
 
 ## Repro
 

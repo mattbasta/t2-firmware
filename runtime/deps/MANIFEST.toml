@@ -69,7 +69,7 @@ via = "txiki.js"
 upstream = "https://github.com/libuv/libuv"
 spdx = "MIT"
 status = "active"
-notes = "Event loop and I/O. Proven on this exact board by every Node 4/8 Tessel firmware."
+notes = "Event loop and I/O. Proven on this exact board by every Node 4/8 Tessel firmware. Calls dlsym() at spawn init, which crashes in static musl on MIPS — covered by runtime/src/static_dl_stub.c (see docs/phase0-results.md)."
 
 [[dependency]]
 name = "mbedtls"

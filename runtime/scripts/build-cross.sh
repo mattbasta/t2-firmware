@@ -29,9 +29,10 @@ export PATH="$TOOLCHAIN_DIR/bin:$PATH"
 
 echo "build-cross: toolchain $TOOLCHAIN_DIR"
 
-cmake -S "$REPO/runtime/deps/txiki.js" -B "$BUILD_DIR" \
+cmake -S "$REPO/runtime" -B "$BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$REPO/runtime/cmake/openwrt-mipsel.cmake" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DT2_STATIC_DL_STUB=ON \
     -DBUILD_WITH_WASM=OFF \
     -DBUILD_WITH_FFI=OFF \
     -DBUILD_WITH_MIMALLOC=OFF \
