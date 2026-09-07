@@ -1,0 +1,72 @@
+From f6a055228357edaa28d2950720b608e528a7c4b8 Mon Sep 17 00:00:00 2001
+From: Matt Basta <mattbasta@mac.lan>
+Date: Mon, 7 Sep 2026 19:43:59 -0400
+Subject: [PATCH 2/2] Allow embedders to supply their own entrypoint
+
+TJS_Run() always evaluates the built-in CLI bundle, so a program that links
+libtjs_core cannot start anywhere but txiki's own command line without
+patching the runtime. That is the one seam missing from an otherwise
+embeddable API: TJSRunOptions carries mem_limit and stack_size, but not the
+choice of what to run.
+
+Add entry/entry_size to TJSRunOptions. When entry is NULL the built-in CLI
+entrypoint runs exactly as before, so TJS_NewRuntime() and every existing
+embedder are unaffected.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ src/tjs.h |  5 +++++
+ src/vm.c  | 14 +++++++++++---
+ 2 files changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/src/tjs.h b/src/tjs.h
+index a5aeb995..a070f3f4 100644
+--- a/src/tjs.h
++++ b/src/tjs.h
+@@ -33,6 +33,11 @@ typedef struct TJSRuntime TJSRuntime;
+ typedef struct TJSRunOptions {
+     int mem_limit;
+     size_t stack_size;
++    /* Optional entrypoint bytecode, as produced by tjsc. When entry is NULL the
++       built-in CLI entrypoint runs, so existing embedders are unaffected. Lets an
++       embedder ship its own entrypoint without patching the runtime. */
++    const uint8_t *entry;
++    size_t entry_size;
+ } TJSRunOptions;
+ 
+ void TJS_DefaultOptions(TJSRunOptions *options);
+diff --git a/src/vm.c b/src/vm.c
+index 8c33bab0..5635d842 100644
+--- a/src/vm.c
++++ b/src/vm.c
+@@ -440,7 +440,10 @@ static void uv__stop(uv_async_t *handle) {
+ }
+ 
+ void TJS_DefaultOptions(TJSRunOptions *options) {
+-    static TJSRunOptions default_options = { .mem_limit = 0, .stack_size = TJS__DEFAULT_STACK_SIZE };
++    static TJSRunOptions default_options = { .mem_limit = 0,
++                                             .stack_size = TJS__DEFAULT_STACK_SIZE,
++                                             .entry = NULL,
++                                             .entry_size = 0 };
+ 
+     memcpy(options, &default_options, sizeof(*options));
+ }
+@@ -979,8 +982,13 @@ int TJS_Run(TJSRuntime *qrt) {
+     if (!qrt->is_worker) {
+         uv_unref((uv_handle_t *) &qrt->stop);
+ 
+-        /* If we are running the main interpreter, run the entrypoint. */
+-        ret = tjs__eval_bytecode(qrt->ctx, tjs__run_main, tjs__run_main_size, true);
++        /* If we are running the main interpreter, run the entrypoint: the one the
++           embedder supplied, or ours. */
++        if (qrt->options.entry) {
++            ret = tjs__eval_bytecode(qrt->ctx, qrt->options.entry, qrt->options.entry_size, true);
++        } else {
++            ret = tjs__eval_bytecode(qrt->ctx, tjs__run_main, tjs__run_main_size, true);
++        }
+     }
+ 
+     if (ret != 0) {
+-- 
+2.50.1 (Apple Git-155)
+

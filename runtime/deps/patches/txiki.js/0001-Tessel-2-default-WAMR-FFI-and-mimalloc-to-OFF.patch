@@ -1,7 +1,7 @@
 From 382d0769dcf5bd98763885525f15fe9cfe6230d8 Mon Sep 17 00:00:00 2001
 From: Matt Basta <mattbasta@mac.lan>
 Date: Sun, 30 Aug 2026 17:45:57 -0400
-Subject: [PATCH] Tessel 2: default WAMR, FFI, and mimalloc to OFF
+Subject: [PATCH 1/2] Tessel 2: default WAMR, FFI, and mimalloc to OFF
 
 Build-default flips for the Tessel 2 runtime (MIPS 24KEc, soft-float,
 64MB/32MB, OpenWrt/musl), per the dependency policy in
@@ -24,7 +24,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
  1 file changed, 3 insertions(+), 3 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index b13d0cd..2b11106 100644
+index b13d0cd3..2b111064 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -55,12 +55,12 @@ macro(xoption OPTION_NAME OPTION_TEXT OPTION_DEFAULT)

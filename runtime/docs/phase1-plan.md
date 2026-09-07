@@ -57,16 +57,38 @@ strategy asked for: one small patch that widens a seam, not a Node layer stitche
 into their internals. Everything else — the loader, the globals, the modules —
 is first-party code in `runtime/src` and `runtime/js`.
 
-### The one native primitive Phase 1 needs
+### The native primitives Phase 1 needs
 
 `evalScript(source, filename)` — `JS_Eval` with `JS_EVAL_TYPE_GLOBAL` and a real
-filename, returning the compiled CJS wrapper function. About thirty lines in
-`runtime/src/`, registered on the context by our `main()`.
+filename, returning the compiled CJS wrapper function.
 
 The alternative is `new Function('exports','require','module','__filename','__dirname', src)`,
 which needs no C at all but throws away the filename: every stack frame in every
 user module reports as `<anonymous>`. Since era code leans on stack traces (and
-`Error.captureStackTrace` is on the compat list), the thirty lines are worth it.
+`Error.captureStackTrace` is on the compat list), the C is worth it. Confirmed on
+the first build: a thrown error inside a script reports
+`at inner (/tmp/t2check/hello.js:6:30)` — real path, real line, through a stripped
+shebang.
+
+**And synchronous file primitives, which was not obvious going in.** `require()` is
+synchronous by contract, and txiki has no synchronous read at all: its ESM loader
+does that work in C (`tjs_module_loader`), and everything reaching JS —
+`tjs.readFile` and friends — is promise-based. The only sync calls it exposes are
+`mkdirSync` and `statSync`, on the internal `core` namespace rather than the public
+`tjs` global. So the loader needs its own, ahead of `node:fs` in Phase 2:
+
+- `readFileSync(path)` → string, UTF-8 decoded in C (a `TextDecoder` round-trip per
+  module is not free at 580 MHz).
+- `pathKind(path)` → `'file' | 'dir' | null`. Deliberately *not* `fs.statSync`:
+  resolution probes many candidates that mostly do not exist, so a miss returns
+  null rather than building and unwinding an exception per candidate.
+- `realpathSync(path)` → the canonical path that keys `require.cache`.
+
+All four live in `runtime/src/natives.c` behind a null-prototype `__t2native` object
+that the bootstrap captures and deletes from `globalThis`, so user code never sees
+them. Their errors carry Node's shape *and* Node's text —
+`ENOENT: no such file or directory, realpath '/x/y.js'`, with `code`, `errno`,
+`syscall` and `path` — because era code branches on `err.code` and prints the rest.
 
 ## 2. What we inherit, what we build
 

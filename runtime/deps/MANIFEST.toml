@@ -49,7 +49,7 @@ fork = "https://github.com/mattbasta/txiki.js"
 spdx = "MIT"
 status = "active"
 upstream_base = "1f8b99f75a4119b49e72610e73ed2b08abed9568"  # upstream master at fork
-notes = "Platform base (WinterTC surface, build system). Carries quickjs-ng, libuv, mbedTLS, libwebsockets transitively via its own submodules — one source of truth for those pins. Fork flips WAMR/FFI/mimalloc defaults OFF; patches mirrored in runtime/deps/patches/txiki.js/."
+notes = "Platform base (WinterTC surface, build system). Carries quickjs-ng, libuv, mbedTLS, libwebsockets transitively via its own submodules — one source of truth for those pins. Fork branch t2/v26.6.0+tessel.2 flips WAMR/FFI/mimalloc defaults OFF and adds an entrypoint override to TJSRunOptions so the Tessel runtime can embed txiki rather than patch its CLI (upstreamable; see runtime/docs/phase1-plan.md §1). Patches mirrored in runtime/deps/patches/txiki.js/."
 
 [[dependency]]
 name = "quickjs-ng"
