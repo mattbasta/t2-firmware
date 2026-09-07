@@ -1,0 +1,14 @@
+Host t2
+  HostName Tessel-02A3F1C0A6A7.local
+  User root
+  ConnectTimeout 8
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  LogLevel ERROR
+  KexAlgorithms +diffie-hellman-group14-sha1,diffie-hellman-group1-sha1
+  HostKeyAlgorithms +ssh-rsa
+  PubkeyAcceptedAlgorithms ssh-rsa
+  IdentitiesOnly yes
+  IdentityFile ~/.tessel/t2key
+  Ciphers +aes128-cbc,aes256-cbc,3des-cbc
+  MACs +hmac-sha1

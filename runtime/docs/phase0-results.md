@@ -13,9 +13,9 @@ definitions come from the strategy document; the dependency rules from
 | Numerics correct on 32-bit soft-float | **Pass under QEMU** — 0/4,588 test262 errors in the numerics slice; probe values exact | QEMU (qemu-mipsel 8.2) |
 | Engine conformance on MIPS matches x86 | **Pass** — full test262 byte-identical to the native build (38/43,034 upstream-known failures) | QEMU |
 | Platform layer (libuv/mbedTLS/sqlite/…) works on MIPS | **Pass with one fix** — txiki suite: 217 pass; the only MIPS defect (static-musl `dlsym` crash) is fixed by `runtime/src/static_dl_stub.c` | QEMU |
-| Numerics correct on the real 24KEc (pre-NaN2008 core) | **Pending — needs the board attached** | — |
-| Startup ≥ 5× faster than Node 8, RSS ≤ ⅓ | **Pending — needs the board** (QEMU timings are not representative) | — |
-| spid handshake from the runtime | **Pending — needs the board** | — |
+| Numerics correct on the real 24KEc (pre-NaN2008 core) | **Pass** — probe identical to the x86 reference; NaN boxes as canonical `00 00 00 00 00 00 f8 7f` | Tessel 2, 2026-09-07 |
+| Startup ≥ 5× faster than the installed Node, RSS ≤ ⅓ | **Pass** — 0.18 s vs 2.41 s (13×); 4.7 MB vs 16.2 MB RSS (29%) | Tessel 2 |
+| spid handshake from the runtime | **Pass** — echo, GPIO high/low, and readback over `/var/run/tessel/port_a` | Tessel 2 |
 
 ## Build
 
@@ -34,8 +34,8 @@ definitions come from the strategy document; the dependency rules from
     ada — only links with `-lstdc++ -lgcc_eh` named explicitly, in that order.
 - A fully static musl binary was chosen deliberately: it satisfies the
   no-system-libraries rule and should also run on the original uClibc-era
-  Tessel 2 firmware, which allows side-by-side measurement against Node 8
-  without reflashing first.
+  Tessel 2 firmware, which allows side-by-side measurement against the Node the board ships with
+  (4.2.1 on this unit) without reflashing first.
 
 ## Under QEMU (qemu-mipsel-static 8.2.2, x86-64 host)
 
@@ -95,6 +95,48 @@ libuv (prefer the direct symbol on musl); tracked as a follow-up.
 - `clone(CLONE_VM)`/`vfork` does not share memory under qemu-user
   (libuv's own probe reports `works=0` and falls back to `fork`).
 - No binfmt_misc without root → a MIPS binary cannot spawn another MIPS binary.
+
+## On the board (Tessel 2, stock 2016 firmware: OpenWrt Chaos Calmer, kernel 3.18.17, uClibc, Node 4.2.1)
+
+The static musl binary runs unchanged on the original uClibc firmware, as intended.
+Same commands, same board, back to back:
+
+| | Node 4.2.1 (V8 4.5, JIT) | tjs 26.6.0 (quickjs-ng, interpreter) | |
+|---|---|---|---|
+| Startup (`-e 1` / `eval 1`) | 2.41 s | **0.18 s** | 13× faster |
+| Idle RSS | 16,200 kB | **4,732 kB** | 29% |
+| Float loop, 3M iterations `s += i*1.5` | 33.8 s | **7.19 s** | 4.7× faster |
+| Int loop, 3M iterations `s += i` | 19.56 s | **5.98 s** | 3.3× faster |
+| Binary on flash | 8.9 MB | **6.2 MB** | |
+
+An interpreter beating a JIT by 3–5× is the FPU story in one table: V8's MIPS
+JIT emits hardware float instructions that this core traps to the kernel
+emulator one at a time, while quickjs-ng's soft-float arithmetic is ordinary
+compiled code. (The int loop overflows int32 and goes through doubles too.)
+
+- Numerics probe: identical to the x86-64 reference list, bit for bit.
+- NaN from `0/0` stored through a `Float64Array` reads back as
+  `00 00 00 00 00 00 f8 7f` — the canonical IEEE quiet NaN — so QuickJS's
+  NaN-boxing is sound on this pre-NaN2008 core (risk R1 closed; soft-float
+  produces standard patterns regardless of the core's FPU conventions).
+- spid handshake (`runtime/scripts/device/spid-test.js`, via txiki's
+  `PipeSocket`): ECHO → `DATA + payload`, GPIO_HIGH + sync, GPIO_IN → HIGH,
+  GPIO_LOW + sync, GPIO_IN → LOW — all five exchanges match the framing
+  `tessel-export.js` uses (`Port.command` sends the command followed by an ECHO
+  sync; `Port.status` reads a bare HIGH/LOW byte).
+
+### Getting bytes onto the board — lessons
+
+The USB serial console is a fine shell but a bad transfer path: a 6 MB upload
+through it stalled twice and wedged the SAMD21's USB bridge (only a cable
+replug clears it), and its line editor chokes on ~500-character command lines.
+What works: **ssh over the LAN**. The stock dropbear (2015.67) accepts only
+public keys, reads them from **`/etc/dropbear/authorized_keys`** (not
+`~/.ssh`, which is silently ignored), and needs legacy client options —
+`KexAlgorithms +diffie-hellman-group14-sha1`, `HostKeyAlgorithms +ssh-rsa`,
+`PubkeyAcceptedAlgorithms ssh-rsa`. Install the key over the console in short
+`printf` chunks, then never touch the console again. See
+`runtime/scripts/device/`.
 
 ## Repro
 
