@@ -230,6 +230,152 @@ static JSValue t2_realpath_sync(JSContext *ctx, JSValue this_val, int argc, JSVa
     return ret;
 }
 
+/* writeSync(fd, string) -> bytes written
+ *
+ * process.stdout.write is synchronous in Node for files and TTYs, and era code
+ * relies on that ordering. txiki's tjs.stdout is a WHATWG WritableStream whose
+ * only path is an async writer, and its synchronous printer lives on the
+ * internal `core` namespace — reaching into that would couple us to txiki's
+ * internals, which is the thing R5 tells us not to do. */
+static JSValue t2_write_sync(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    int32_t fd;
+
+    if (JS_ToInt32(ctx, &fd, argv[0])) {
+        return JS_EXCEPTION;
+    }
+
+    /* Strings go out as UTF-8; a Uint8Array goes out byte for byte. Routing
+     * binary through a string conversion would mangle anything not valid UTF-8,
+     * and process.stdout.write(buffer) is how era code emits binary. */
+    size_t len;
+    const char *str = NULL;
+    const char *data;
+
+    if (JS_IsString(argv[1])) {
+        str = JS_ToCStringLen(ctx, &len, argv[1]);
+
+        if (!str) {
+            return JS_EXCEPTION;
+        }
+
+        data = str;
+    } else {
+        uint8_t *bytes = JS_GetUint8Array(ctx, &len, argv[1]);
+
+        if (!bytes) {
+            return JS_EXCEPTION;
+        }
+
+        data = (const char *) bytes;
+    }
+
+    uv_fs_t req;
+    size_t off = 0;
+    int r = 0;
+
+    while (off < len) {
+        uv_buf_t b = uv_buf_init((char *) data + off, len - off);
+        int n = uv_fs_write(NULL, &req, fd, &b, 1, -1, NULL);
+
+        uv_fs_req_cleanup(&req);
+
+        if (n == UV_EAGAIN) {
+            continue; /* non-blocking stdio: the fd is not ready yet */
+        }
+
+        if (n < 0) {
+            r = n;
+            break;
+        }
+
+        if (n == 0) {
+            break;
+        }
+
+        off += n;
+    }
+
+    if (str) {
+        JS_FreeCString(ctx, str);
+    }
+
+    if (r != 0) {
+        return t2_throw_uv(ctx, r, "write", NULL);
+    }
+
+    return JS_NewInt64(ctx, (int64_t) off);
+}
+
+/* isTTY(fd) -> boolean, for process.stdout.isTTY. */
+static JSValue t2_is_tty(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    int32_t fd;
+
+    if (JS_ToInt32(ctx, &fd, argv[0])) {
+        return JS_EXCEPTION;
+    }
+
+    return JS_NewBool(ctx, uv_guess_handle(fd) == UV_TTY);
+}
+
+/* runMicrotasks() -> drains the job queue to completion.
+ *
+ * Node drains microtasks the moment the main script returns, before any timer
+ * fires. libuv runs timers *before* its prepare handler, so an already-due
+ * setTimeout(0) would otherwise beat process.nextTick and promise callbacks on
+ * the first turn of the loop — observable, and wrong. Draining explicitly when
+ * the entry script returns restores Node's ordering.
+ *
+ * txiki has core.drainMicrotasks(), but only on its internal namespace; this is
+ * the same few lines without the coupling. */
+static JSValue t2_run_microtasks(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    JSRuntime *rt = JS_GetRuntime(ctx);
+
+    for (;;) {
+        JSContext *job_ctx;
+        int err = JS_ExecutePendingJob(rt, &job_ctx);
+
+        if (err == 0) {
+            break;
+        }
+
+        if (err < 0) {
+            /* Ours to propagate; anything else belongs to txiki's own loop. */
+            if (job_ctx == ctx) {
+                return JS_EXCEPTION;
+            }
+
+            break;
+        }
+    }
+
+    return JS_UNDEFINED;
+}
+
+/* process.platform / process.arch. txiki's tjs.system reports cpus, load and
+ * interfaces but not these, so they come from the compiler. Values are Node's
+ * spellings, since era code switches on them. */
+#if defined(__APPLE__)
+#define T2_PLATFORM "darwin"
+#elif defined(__linux__)
+#define T2_PLATFORM "linux"
+#else
+#define T2_PLATFORM "unknown"
+#endif
+
+#if defined(__mips__) && defined(__MIPSEL__)
+#define T2_ARCH "mipsel"
+#elif defined(__mips__)
+#define T2_ARCH "mips"
+#elif defined(__x86_64__)
+#define T2_ARCH "x64"
+#elif defined(__aarch64__)
+#define T2_ARCH "arm64"
+#elif defined(__arm__)
+#define T2_ARCH "arm"
+#else
+#define T2_ARCH "unknown"
+#endif
+
 void t2_register_natives(JSContext *ctx) {
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue natives = JS_NewObjectProto(ctx, JS_NULL);
@@ -238,6 +384,11 @@ void t2_register_natives(JSContext *ctx) {
     JS_SetPropertyStr(ctx, natives, "readFileSync", JS_NewCFunction(ctx, t2_read_file_sync, "readFileSync", 1));
     JS_SetPropertyStr(ctx, natives, "pathKind", JS_NewCFunction(ctx, t2_path_kind, "pathKind", 1));
     JS_SetPropertyStr(ctx, natives, "realpathSync", JS_NewCFunction(ctx, t2_realpath_sync, "realpathSync", 1));
+    JS_SetPropertyStr(ctx, natives, "writeSync", JS_NewCFunction(ctx, t2_write_sync, "writeSync", 2));
+    JS_SetPropertyStr(ctx, natives, "isTTY", JS_NewCFunction(ctx, t2_is_tty, "isTTY", 1));
+    JS_SetPropertyStr(ctx, natives, "runMicrotasks", JS_NewCFunction(ctx, t2_run_microtasks, "runMicrotasks", 0));
+    JS_SetPropertyStr(ctx, natives, "platform", JS_NewString(ctx, T2_PLATFORM));
+    JS_SetPropertyStr(ctx, natives, "arch", JS_NewString(ctx, T2_ARCH));
 
     JS_SetPropertyStr(ctx, global, "__t2native", natives);
 

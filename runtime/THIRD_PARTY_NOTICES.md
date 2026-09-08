@@ -7,6 +7,7 @@ The Tessel 2 runtime statically links or incorporates the following third-party 
 | Component | License | Upstream |
 |---|---|---|
 | ada | Apache-2.0 | https://github.com/ada-url/ada |
+| esbuild | MIT | https://github.com/evanw/esbuild |
 | libuv | MIT | https://github.com/libuv/libuv |
 | libwebsockets | MIT | https://github.com/warmcat/libwebsockets |
 | llhttp | MIT | https://github.com/nodejs/llhttp |

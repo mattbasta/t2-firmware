@@ -71,11 +71,13 @@ the first build: a thrown error inside a script reports
 shebang.
 
 **And synchronous file primitives, which was not obvious going in.** `require()` is
-synchronous by contract, and txiki has no synchronous read at all: its ESM loader
-does that work in C (`tjs_module_loader`), and everything reaching JS —
-`tjs.readFile` and friends — is promise-based. The only sync calls it exposes are
-`mkdirSync` and `statSync`, on the internal `core` namespace rather than the public
-`tjs` global. So the loader needs its own, ahead of `node:fs` in Phase 2:
+synchronous by contract, and everything on txiki's *public* surface —
+`tjs.readFile` and friends — is promise-based, because its ESM loader does that
+work down in C. It does have `core.syncReadFile`, `core.drainMicrotasks`,
+`core.mkdirSync` and `core.statSync`, but all of them live on `tjs:internal/core`,
+the namespace whose own source says user code must not import it. Building on that
+is exactly the coupling R5 warns against, so the loader gets its own, ahead of
+`node:fs` in Phase 2:
 
 - `readFileSync(path)` → string, UTF-8 decoded in C (a `TextDecoder` round-trip per
   module is not free at 580 MHz).
@@ -205,6 +207,20 @@ Phase 1's CI needs a decision up front: either a runner with
 `sudo apt-get install qemu-user-static` (binfmt registered, spawning works), or a
 one-file-per-invocation harness that never spawns. The former is better —
 `child_process` is Phase 2's gate and will need real spawning anyway.
+
+## 5a. Known deviations so far
+
+Recorded as they are created, so the ECMA-429/Node divergence list Phase 3 has to
+publish is not reconstructed from memory at the end.
+
+| Deviation | Why | Cost to close |
+|---|---|---|
+| `setImmediate` is `setTimeout(fn, 0)` | txiki has no check-phase hook exposed to JS. Node runs immediates in libuv's check phase, so ours land *after* pending I/O callbacks rather than before some of them. | A `uv_check` handle in `natives.c`; exact, maybe 30 lines. |
+| `process.nextTick` ordering is exact only in the main-script window | The bootstrap drains the tick queue before the job queue when the entry script returns, which is where ordering-sensitive era code lives. Inside later turns, ticks ride `queueMicrotask` and so interleave with promise jobs in registration order rather than always preceding them. | Drive the drain from JS one job at a time (`runMicrotaskJob()` returning a bool), at the cost of a JS↔C call per job. |
+| `process.stdout`/`stderr` are not Writable streams | `node:stream` is step 5. They carry `write`/`end`/`fd`/`isTTY` and an EventEmitter shape, which is the surface era code touches. | Falls out of step 5. |
+| `process.memoryUsage()` returns zeros | Nothing on txiki's public surface reports RSS. | A native over `uv_resident_set_memory()`. |
+| `process` is not an `instanceof EventEmitter` | `node:events` is step 4; `process` carries its own minimal emitter until then. | Falls out of step 4. |
+| `Buffer.allocUnsafe` allocates fresh, zeroed memory | Node hands back a slice of a shared pool, trading predictable memory for speed. On a 64 MB board that trade runs the wrong way. | Deliberate; not planned to close. |
 
 ## 6. Budget and risks
 

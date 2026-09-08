@@ -42,7 +42,7 @@ LICENSE_ALLOWLIST = {
 }
 INTAKES = {
     "submodule", "transitive-submodule", "in-tree", "in-tree-via-txiki",
-    "harvest", "toolchain",
+    "harvest", "toolchain", "dev-tool",
 }
 TIERS = {0, 1, 2, "D"}
 
