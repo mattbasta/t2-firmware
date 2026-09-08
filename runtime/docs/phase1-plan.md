@@ -131,9 +131,14 @@ We mirror it for `runtime/js/**`, with two constraints to record:
   mipsel works because both are little-endian (proven in Phase 0). A big-endian
   target would need regeneration on a big-endian host; not our target, but it
   belongs in the notes.
-- **Bundler: esbuild, as txiki does it** (decided). It is driven via `npx`
-  (`Makefile:19`), stays Tier D, and stays out of the release path because the
-  generated `.c` is committed. Needs a MANIFEST entry.
+- **Bundler: esbuild, as txiki does it** (decided). Tier D, and out of the release
+  path because the generated `.c` is committed. Unlike txiki — which shells out to
+  `npx esbuild` (`Makefile:19`) — `runtime/scripts/build-js.sh` fetches a
+  sha256-verified esbuild binary from the registry and caches it in the build
+  directory. No npm needed, and a pinned artifact rather than a resolution
+  performed at build time, which is what the rest of this repo does with
+  everything else. Verified reproducible: the same `runtime/js/` produces
+  byte-identical bytecode on the dev machine and the build machine.
 
 ### What the shipped bytecode actually is, and the laziness rule
 

@@ -4,33 +4,89 @@
 # runtime/src/bundles/.
 #
 # This is NOT part of the release build. The generated .c files are committed,
-# exactly as txiki commits its own, so a cross-build needs no host toolchain, no
-# npm, and not this script — see runtime/docs/phase1-plan.md §3. Run it when
-# anything under runtime/js/ changes, and commit the result.
+# exactly as txiki commits its own, so a cross-build needs no host toolchain and
+# not this script — see runtime/docs/phase1-plan.md §3. Run it when anything under
+# runtime/js/ changes, and commit the result.
 #
-# Requires node/npx (for esbuild) and cmake (to build tjsc) on the same machine.
+# Needs cmake (for tjsc) and curl. It does NOT need npm: esbuild is fetched as a
+# pinned, sha256-verified binary and cached in the build directory. That is both
+# one less thing to install and a better match for how this repo pins everything
+# else — a resolved-at-build-time `npx esbuild@x` is not a reproducible artifact.
 #
 # Usage: runtime/scripts/build-js.sh [host-build-dir]
 #
 set -eu
 
-ESBUILD_VERSION=0.25.10   # pinned; also recorded in runtime/deps/MANIFEST.toml
+# Pinned; also recorded in runtime/deps/MANIFEST.toml.
+ESBUILD_VERSION=0.25.10
+ESBUILD_SHA256_linux_x64=25a7b968b8e5172baaa8f44f91b71c1d2d7e760042c691f22ab59527d870d145
+ESBUILD_SHA256_darwin_arm64=dd339e37292a711b2eba546fb1df36dd9f846a849ac3edfd3ac5271b5022f323
 
 RUNTIME=$(cd "$(dirname "$0")/.." && pwd)
 BUILD=${1:-$RUNTIME/../build/host}
 JOBS=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-command -v npx >/dev/null 2>&1 || {
-    echo "build-js: needs node/npx to run esbuild" >&2
-    exit 1
+mkdir -p "$BUILD"
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
 }
+
+esbuild_path() {
+    bin="$BUILD/esbuild-$ESBUILD_VERSION"
+
+    if [ -x "$bin" ]; then
+        echo "$bin"
+        return
+    fi
+
+    case "$(uname -s)-$(uname -m)" in
+        Linux-x86_64)   pkg=linux-x64;    want=$ESBUILD_SHA256_linux_x64 ;;
+        Darwin-arm64)   pkg=darwin-arm64; want=$ESBUILD_SHA256_darwin_arm64 ;;
+        *)
+            echo "build-js: no pinned esbuild for $(uname -s)-$(uname -m)." >&2
+            echo "  Add its sha256 to this script (registry.npmjs.org/@esbuild/<pkg>)." >&2
+            exit 1
+            ;;
+    esac
+
+    tgz="$BUILD/esbuild-$ESBUILD_VERSION-$pkg.tgz"
+
+    echo "build-js: fetching esbuild $ESBUILD_VERSION ($pkg)" >&2
+    curl -fsSL "https://registry.npmjs.org/@esbuild/$pkg/-/$pkg-$ESBUILD_VERSION.tgz" -o "$tgz"
+
+    got=$(sha256_of "$tgz")
+
+    if [ "$got" != "$want" ]; then
+        echo "build-js: esbuild sha256 mismatch" >&2
+        echo "  expected $want" >&2
+        echo "  got      $got" >&2
+        rm -f "$tgz"
+        exit 1
+    fi
+
+    unpack="$BUILD/esbuild-unpack.$$"
+    mkdir -p "$unpack"
+    tar xzf "$tgz" -C "$unpack" package/bin/esbuild
+    mv "$unpack/package/bin/esbuild" "$bin"
+    chmod +x "$bin"
+    rm -rf "$unpack"
+
+    echo "$bin"
+}
+
+ESBUILD=$(esbuild_path)
 
 # tjsc derives the C symbol name from the *input* filename, so the bundle has to
 # be called entry.js for the symbols to come out as t2__entry / t2__entry_size.
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
-npx --yes "esbuild@$ESBUILD_VERSION" "$RUNTIME/js/entry.js" \
+"$ESBUILD" "$RUNTIME/js/entry.js" \
     --bundle \
     --format=esm \
     --platform=neutral \
@@ -53,4 +109,4 @@ mkdir -p "$RUNTIME/src/bundles"
     -p t2__ \
     "$STAGE/entry.js"
 
-echo "build-js: $(grep -m1 '_size = ' "$RUNTIME/src/bundles/entry.c" | tr -dc '0-9') bytes of bytecode"
+echo "build-js: $(sed -n 's/.*_size = \([0-9]*\);.*/\1/p' "$RUNTIME/src/bundles/entry.c" | head -1) bytes of bytecode"
