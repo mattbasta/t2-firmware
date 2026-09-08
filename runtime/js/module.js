@@ -78,7 +78,14 @@ function loadCore(name) {
     // terminates the same way one between files on disk does.
     LAZY_MODULES.set(name, module);
 
-    wrapper.call(module.exports, module.exports, makeRequire(module), module, name, '');
+    // Core modules get one extra wrapper argument that user modules do not:
+    // __native. node:fs and everything after it in Phase 2 is a thin JS shell
+    // over the primitives in runtime/src, and the bootstrap deletes
+    // globalThis.__t2native before any user code runs — so this is the only
+    // channel, and it reaches nothing that did not ship inside the binary. The
+    // matching signature is in runtime/scripts/build-js.sh; WRAPPER_HEAD below,
+    // which is what files on disk get, deliberately stays at five.
+    wrapper.call(module.exports, module.exports, makeRequire(module), module, name, '', native);
     module.loaded = true;
 
     return module.exports;

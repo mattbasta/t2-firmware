@@ -17,6 +17,8 @@ add_subdirectory(deps/txiki.js)
 add_executable(t2-node
     src/main.c
     src/natives.c
+    src/fs.c
+    src/constants.c
     src/bundles/entry.c
     src/bundles/core_modules.c
 )

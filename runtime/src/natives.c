@@ -25,10 +25,19 @@
 /* Node-shaped error, message included: era code branches on `err.code`, but it
  * also prints these, and "ENOENT: no such file or directory, open '/x/y.js'" is
  * the text a decade of Node users can read at a glance. */
-static JSValue t2_throw_uv(JSContext *ctx, int r, const char *syscall, const char *path) {
-    char message[PATH_MAX + 128];
+JSValue t2_throw_uv2(JSContext *ctx, int r, const char *syscall, const char *path, const char *dest) {
+    char message[2 * PATH_MAX + 128];
 
-    if (path) {
+    if (path && dest) {
+        snprintf(message,
+                 sizeof(message),
+                 "%s: %s, %s '%s' -> '%s'",
+                 uv_err_name(r),
+                 uv_strerror(r),
+                 syscall,
+                 path,
+                 dest);
+    } else if (path) {
         snprintf(message, sizeof(message), "%s: %s, %s '%s'", uv_err_name(r), uv_strerror(r), syscall, path);
     } else {
         snprintf(message, sizeof(message), "%s: %s, %s", uv_err_name(r), uv_strerror(r), syscall);
@@ -45,7 +54,15 @@ static JSValue t2_throw_uv(JSContext *ctx, int r, const char *syscall, const cha
         JS_SetPropertyStr(ctx, err, "path", JS_NewString(ctx, path));
     }
 
+    if (dest) {
+        JS_SetPropertyStr(ctx, err, "dest", JS_NewString(ctx, dest));
+    }
+
     return JS_Throw(ctx, err);
+}
+
+JSValue t2_throw_uv(JSContext *ctx, int r, const char *syscall, const char *path) {
+    return t2_throw_uv2(ctx, r, syscall, path, NULL);
 }
 
 /*
@@ -448,6 +465,9 @@ void t2_register_natives(JSContext *ctx) {
     JS_SetPropertyStr(ctx, natives, "loadCoreModule", JS_NewCFunction(ctx, t2_load_core_module, "loadCoreModule", 1));
     JS_SetPropertyStr(ctx, natives, "platform", JS_NewString(ctx, T2_PLATFORM));
     JS_SetPropertyStr(ctx, natives, "arch", JS_NewString(ctx, T2_ARCH));
+
+    t2_register_fs(ctx, natives);
+    t2_register_constants(ctx, natives);
 
     JS_SetPropertyStr(ctx, global, "__t2native", natives);
 

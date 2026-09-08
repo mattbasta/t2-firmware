@@ -60,13 +60,18 @@ eq(typeof require('path').join, 'function', 'core: path');
 eq(typeof require('node:path').join, 'function', 'core: node: prefix');
 eq(require('buffer').Buffer === Buffer, true, 'core: buffer');
 
+// A core module that is named but not yet built must say so, distinguishably
+// from one that does not exist. Track this to whatever is still pending: fs
+// moved out of this slot in Phase 2, and net will move out of it too.
 try {
-    require('fs');
+    require('net');
     fail++;
     console.log('FAIL unimplemented core module did not throw');
 } catch (err) {
     eq(err.code, 'ERR_MODULE_NOT_IMPLEMENTED', 'unimplemented core module is distinguishable');
 }
+
+eq(typeof require('fs').readFileSync, 'function', 'core: fs');
 
 try {
     require('./nope');

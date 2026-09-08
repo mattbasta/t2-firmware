@@ -161,8 +161,13 @@ for entry in "$RUNTIME"/js/node/*; do
 
     # The wrapper opens on line 1 with no newline before the source, exactly as
     # Node does it, so reported line numbers match the file.
+    #
+    # __native is the sixth argument core modules get and user modules do not:
+    # fs and the rest of Phase 2 are JS shells over runtime/src primitives, and
+    # globalThis.__t2native is gone before user code runs. See the call site in
+    # runtime/js/module.js.
     {
-        printf '(function (exports, require, module, __filename, __dirname) {'
+        printf '(function (exports, require, module, __filename, __dirname, __native) {'
         cat "$source"
         printf '\n})'
     } > "$STAGE/$name.js"

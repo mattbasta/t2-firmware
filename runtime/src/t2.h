@@ -14,6 +14,25 @@
  * global, so user code never sees it. */
 void t2_register_natives(JSContext *ctx);
 
+/* The filesystem primitives, under __t2native.fs. Split out of natives.c
+ * because there are twenty-odd of them; see runtime/src/fs.c. */
+void t2_register_fs(JSContext *ctx, JSValue natives);
+
+/* The platform constant table (errno, signals, open flags, file modes), read
+ * from the target's own headers. Backs the legacy `constants` core module and,
+ * later, os.constants. t2_fill_constants writes into an existing object so the
+ * same table can be reused under a different name. See runtime/src/constants.c. */
+void t2_fill_constants(JSContext *ctx, JSValue obj);
+void t2_register_constants(JSContext *ctx, JSValue natives);
+
+/* Throws a Node-shaped error for a libuv status: `code`, `errno`, `syscall`,
+ * `path`, and Node's own message text, which era code prints as often as it
+ * branches on it. The two-path form is for rename/link/symlink/copyfile, whose
+ * messages name both ends ("... rename '/a' -> '/b'") and which carry `dest`
+ * alongside `path`. */
+JSValue t2_throw_uv(JSContext *ctx, int r, const char *syscall, const char *path);
+JSValue t2_throw_uv2(JSContext *ctx, int r, const char *syscall, const char *path, const char *dest);
+
 /* One core module, precompiled to QuickJS bytecode. Each entry's bytecode is a
  * *script* whose completion value is the CommonJS wrapper function, so it can be
  * read and called only when something actually requires that module — the

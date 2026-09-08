@@ -8,11 +8,10 @@
 // Run runtime/test/corpus/fetch.sh first; without it this exits 0 with a note,
 // so a fresh checkout does not fail for want of a network.
 //
-// Three of the packages the strategy names — debug, rimraf, graceful-fs — need
-// fs or tty, which arrive in Phase 2. They are still worth having here now: we
-// assert that they *resolve* through a real node_modules tree and fail exactly
-// at the boundary we expect, which tests the loader and turns Phase 2 into a
-// matter of deleting these assertions.
+// Packages the strategy names that were gated on Phase 2 get their assertions
+// inverted as each boundary falls. graceful-fs ran into two: node:fs, and then
+// the legacy `constants` module nobody had listed — which is exactly why the
+// corpus exists. debug still stops at tty.
 
 let fail = 0;
 const eq = (actual, expected, label) => {
@@ -73,8 +72,33 @@ eq(require('safer-buffer').Buffer.from('x').toString(), 'x', 'safer-buffer resol
 eq(require('string_decoder/') !== require('string_decoder'), true,
     "require('string_decoder/') reaches the package, not the core module");
 
-// --- packages gated on Phase 2 ----------------------------------------------
-for (const [name, missing] of [['debug', 'tty'], ['graceful-fs', 'fs']]) {
+// --- graceful-fs: fs through third-party code -------------------------------
+//
+// It requires fs and then `constants`, patches a dozen fs functions, and hands
+// back its own module object. Loading it at all exercises more of our fs shape
+// than a direct call does, because it reads and rebinds what it finds there.
+const gfs = require('graceful-fs');
+
+eq(typeof gfs.readFileSync, 'function', 'graceful-fs exposes readFileSync');
+eq(typeof gfs.constants.O_RDONLY, 'number', 'graceful-fs carries fs.constants through');
+
+const gfsTmp = gfs.mkdtempSync('/tmp/t2gfs-');
+
+gfs.writeFileSync(`${gfsTmp}/x`, 'through graceful-fs');
+eq(gfs.readFileSync(`${gfsTmp}/x`, 'utf8'), 'through graceful-fs', 'graceful-fs readFileSync round trip');
+eq(gfs.statSync(`${gfsTmp}/x`).isFile(), true, 'graceful-fs statSync');
+eq(gfs.readdirSync(gfsTmp).join(), 'x', 'graceful-fs readdirSync');
+require('fs').rmSync(gfsTmp, { recursive: true });
+
+// --- the legacy constants module --------------------------------------------
+const legacyConstants = require('constants');
+
+eq(typeof legacyConstants.ENOENT, 'number', 'constants.ENOENT');
+eq(typeof legacyConstants.SIGTERM, 'number', 'constants.SIGTERM');
+eq(legacyConstants.O_RDONLY, require('fs').constants.O_RDONLY, 'constants agrees with fs.constants');
+
+// --- packages still gated on Phase 2 ----------------------------------------
+for (const [name, missing] of [['debug', 'tty']]) {
     try {
         require(name);
         fail++;

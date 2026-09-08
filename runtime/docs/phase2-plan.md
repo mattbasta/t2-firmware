@@ -20,9 +20,15 @@ being the thing the board actually runs.
 
 ## 0. Status
 
-Not started. Phase 1 is complete: six suites (~200 assertions) pass on x86-64 and
-on mipsel under QEMU, in CI on both, and the cross-built binary is 6,283,268
-bytes against an 8 MB gate.
+**Step 1a — the synchronous half of `fs` — is done**, along with `constants`
+(§2a). Seven suites pass on x86-64 and on mipsel under QEMU; the cross-built
+binary is 6,316,040 bytes, 32,772 more than Phase 1's, against an 8 MB gate.
+Next is step 1b, the callback layer, which is where patch 0004 is first needed.
+
+| | Eager | Lazy |
+|---|---|---|
+| Kernel | 33,301 B | — |
+| Core modules (Phase 1's seven, plus `fs` and `constants`) | — | 93,313 B |
 
 ## 1. What the floor actually is
 
@@ -118,6 +124,29 @@ genuinely asynchronous rather than a synchronous call hidden behind
 `setImmediate` — which on a 580 MHz core with slow flash would stall the loop
 on every read.
 
+### 2a. `constants`, which nothing had listed
+
+Found by running the corpus, not by reading a spec. With `fs` in place,
+`graceful-fs` got one module further and stopped at `require('constants')` — the
+flat table Node deprecated in v6 (DEP0008) and still ships in v26, because a
+decade of packages import it. It was in nobody's Phase 2 list.
+
+It has to come from C, and the reason is sharper than "platform differences":
+**MIPS does not use the generic Linux errno numbers.** Measured across the two
+builds of this runtime —
+
+| | x86-64 | mipsel |
+|---|---|---|
+| `ENOTEMPTY` | 39 | 93 |
+| `EDEADLK` | 35 | 45 |
+| `ENOMSG` | 42 | 35 |
+
+A table written in JS would have been correct on every machine this project is
+developed on and quietly wrong on the board — and wrong in the specific way that
+makes `err.errno === constants.ENOTEMPTY` silently false. `runtime/src/constants.c`
+reads the target's own headers, and `os.constants` will reuse the same table in
+step 4.
+
 ## 3. What we inherit, what we build
 
 | Phase 2 surface | Status | Where it comes from |
@@ -127,6 +156,7 @@ on every read.
 | `child_process` | **Build** | `spawn` over `uv_spawn` with an `EventEmitter` and our streams; `exec`/`execFile` as buffering wrappers; `execSync`/`execFileSync`/`spawnSync` on a private loop (§2). `fork` needs an IPC channel nothing here has — it gets an explicit error, not a stub. |
 | `os` | **Wrap** | [`mod_os.c:519–540`](../deps/txiki.js/src/mod_os.c) already has `uname`, `uptime`, `cpuInfo`, `loadavg`, `networkInterfaces`, `homeDir`, `hostName`, `tmpDir`, `userInfo`, `availableParallelism` — but on the internal namespace, so the handful we need get first-party bindings alongside the rest. Mostly shaping into Node's names and return shapes. |
 | `tty` | **Wrap + build** | `core.guessHandle(fd)` answers `'tty'`/`'pipe'`/`'file'`, and the TTY handle has `setMode`/`getWinSize`. `isatty` is nearly free; `ReadStream`/`WriteStream` fall out of `net` plus the stream port. Phase 1 already ships an `isTTY` native. |
+| `constants` | **Build** | The legacy flat table, from the target's headers (§2a). Not originally in this phase's list; the corpus found it. |
 | `dns` | **Wrap** | `lookup` over `getaddrinfo` ([`core/lookup.js`](../deps/txiki.js/src/js/core/lookup.js)) with Node's callback shape, plus `dns.promises.lookup`. The resolver family (`resolve4`, `resolveMx`, …) is not in the gate and is not planned here. |
 | `process.stdout`/`stderr` | **Close a deviation** | Become real `Writable`s now that `stream` exists. |
 | `setImmediate` | **Close a deviation** | A real `uv_check` handle. `tessel-export.js` polls on `setImmediate` in the reset path and uses it in `Pin.read`, so its ordering against I/O stops being academic. |

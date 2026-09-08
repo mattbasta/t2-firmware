@@ -59,15 +59,17 @@ function registerCoreModules() {
 
     const implemented = new Set(Module.builtinModules);
 
-    const pending = {
-        'Phase 1 step 4': ['events', 'util', 'assert', 'querystring', 'string_decoder', 'url'],
-        'Phase 1 step 5': ['stream'],
-        'Phase 2': ['fs', 'net', 'child_process', 'os', 'tty', 'dns'],
-        'Phase 3': ['http', 'https', 'crypto', 'zlib', 'dgram', 'tls']
-    };
+    const pending = [
+        { phase: 'Phase 1', doc: 'runtime/docs/phase1-plan.md',
+            names: ['events', 'util', 'assert', 'querystring', 'string_decoder', 'url', 'stream'] },
+        { phase: 'Phase 2', doc: 'runtime/docs/phase2-plan.md',
+            names: ['fs', 'net', 'child_process', 'os', 'tty', 'dns', 'constants'] },
+        { phase: 'Phase 3', doc: 'the strategy document',
+            names: ['http', 'https', 'crypto', 'zlib', 'dgram', 'tls'] }
+    ];
 
-    for (const [phase] of Object.entries(pending)) {
-        for (const name of pending[phase]) {
+    for (const { phase, doc, names } of pending) {
+        for (const name of names) {
             if (implemented.has(name)) {
                 continue;
             }
@@ -75,7 +77,7 @@ function registerCoreModules() {
             definePending(
                 name,
                 `Cannot find module '${name}': it is a core module this runtime has not ` +
-                `implemented yet — planned for ${phase}. See runtime/docs/phase1-plan.md.`
+                `implemented yet — planned for ${phase}. See ${doc}.`
             );
         }
     }
@@ -164,12 +166,17 @@ function main() {
     installGlobals();
     installProcess([resolveValue(tjs.exePath), ...args]);
 
+    // An allowlist, not the raw __t2native: this object is also what core
+    // modules receive as their sixth wrapper argument (runtime/js/module.js),
+    // so anything added here becomes reachable from node:fs and its successors.
     setNative({
         evalScript: native.evalScript,
         readFileSync: native.readFileSync,
         realpathSync: native.realpathSync,
         pathKind: native.pathKind,
         loadCoreModule: native.loadCoreModule,
+        fs: native.fs,
+        constants: native.constants,
         cwd: () => process.cwd()
     });
     registerCoreModules();
