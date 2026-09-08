@@ -125,8 +125,32 @@ names=""
 
 : > "$STAGE/blobs.c"
 
-for source in "$RUNTIME"/js/node/*.js; do
-    name=$(basename "$source" .js)
+for entry in "$RUNTIME"/js/node/*; do
+    if [ -d "$entry" ]; then
+        # A multi-file module (stream). Bundle its internal requires into one
+        # file; --platform=node keeps the builtins external, so require('buffer')
+        # and friends still resolve through our loader to our core modules.
+        name=$(basename "$entry")
+
+        [ -f "$entry/index.js" ] || continue
+
+        "$ESBUILD" "$entry/index.js" \
+            --bundle \
+            --format=cjs \
+            --platform=node \
+            --target=es2022 \
+            --outfile="$STAGE/module-$name.js" >/dev/null
+
+        source="$STAGE/module-$name.js"
+    else
+        case "$entry" in
+            *.js) ;;
+            *) continue ;;
+        esac
+
+        name=$(basename "$entry" .js)
+        source="$entry"
+    fi
 
     case $name in
         *[!a-z0-9_]*)

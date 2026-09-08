@@ -34,4 +34,26 @@ if(T2_STATIC_DL_STUB)
     target_sources(t2-node PRIVATE src/static_dl_stub.c)
 endif()
 
+# txiki applies its size options to its own CLI target only, so ours has to opt
+# in explicitly. Without the link half of this the binary carries every unused
+# function in the archives: it measured 1.2 MB larger than the same build with
+# --gc-sections, for a change that added 114 KB of bytecode.
+if(BUILD_WITH_GC_SECTIONS)
+    target_compile_options(t2-node PRIVATE -ffunction-sections -fdata-sections)
+
+    if(MSVC)
+        target_link_options(t2-node PRIVATE /OPT:REF /OPT:ICF)
+    elseif(APPLE)
+        target_link_options(t2-node PRIVATE -Wl,-dead_strip)
+    else()
+        target_link_options(t2-node PRIVATE -Wl,--gc-sections)
+    endif()
+endif()
+
+# txiki strips only its own CLI; do the same for ours when the option is on.
+if(BUILD_WITH_STRIP AND CMAKE_STRIP)
+    add_custom_command(TARGET t2-node POST_BUILD
+        COMMAND ${CMAKE_STRIP} $<TARGET_FILE:t2-node>)
+endif()
+
 set_target_properties(tjs-cli PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")

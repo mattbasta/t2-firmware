@@ -15,7 +15,7 @@ NODE=${1:-$TEST/../../build/host-node/node}
 
 status=0
 
-for suite in buffer.js process.js core-modules.js loader/index.js; do
+for suite in buffer.js process.js core-modules.js stream.js loader/index.js; do
     if ! $NODE "$TEST/$suite" one two; then
         status=1
     fi

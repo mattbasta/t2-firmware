@@ -14,7 +14,9 @@ The Tessel 2 runtime statically links or incorporates the following third-party 
 | llhttp | MIT | https://github.com/nodejs/llhttp |
 | mbedtls | Apache-2.0 | https://github.com/Mbed-TLS/mbedtls |
 | miniz | MIT | https://github.com/richgel999/miniz |
+| nodejs-legacy-streams | MIT | https://github.com/nodejs/node |
 | quickjs-ng | MIT | https://github.com/quickjs-ng/quickjs |
+| readable-stream | MIT | https://github.com/nodejs/readable-stream |
 | sqlite3 | blessing | https://sqlite.org/ |
 | string_decoder | MIT | https://github.com/nodejs/string_decoder |
 | tweetnacl | Unlicense | https://tweetnacl.cr.yp.to/ |

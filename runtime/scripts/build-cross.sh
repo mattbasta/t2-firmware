@@ -4,7 +4,7 @@
 #
 # Usage: runtime/scripts/build-cross.sh <sdk-dir> <build-dir> [cmake args...]
 #   sdk-dir    where scripts/fetch-sdk.sh unpacked the SDK (contains openwrt-sdk-*/)
-#   build-dir  CMake build directory; the binary lands at <build-dir>/tjs
+#   build-dir  CMake build directory; the binary lands at <build-dir>/node
 #
 # Needs no network: everything comes from the SDK and the git submodules
 # (runtime/DEPENDENCIES.md, prime directive). CI runs this under `unshare --net`.
@@ -41,7 +41,7 @@ cmake -S "$REPO/runtime" -B "$BUILD_DIR" \
     -DBUILD_WITH_GC_SECTIONS=ON \
     "$@"
 
-cmake --build "$BUILD_DIR" --target tjs-cli -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+cmake --build "$BUILD_DIR" --target t2-node -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 
-echo "build-cross: $(ls -la "$BUILD_DIR/tjs")"
-file "$BUILD_DIR/tjs" 2>/dev/null || true
+echo "build-cross: $(ls -la "$BUILD_DIR/node")"
+file "$BUILD_DIR/node" 2>/dev/null || true

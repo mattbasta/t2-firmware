@@ -278,6 +278,23 @@ function callbackify(original) {
     return callbackified;
 }
 
+// NODE_DEBUG=stream,net enables the matching sections. readable-stream probes
+// for this and silently degrades to a no-op without it, so it is optional — but
+// it is a few lines, and stream debugging is exactly when you want it.
+function debuglog(section) {
+    const enabled = (process.env.NODE_DEBUG || '')
+        .split(/[\s,]+/)
+        .some(entry => entry === section || entry === '*');
+
+    if (!enabled) {
+        return function noop() {};
+    }
+
+    return function debug(...args) {
+        console.error(`${section.toUpperCase()} ${process.pid}: ${format(...args)}`);
+    };
+}
+
 function inherits(ctor, superCtor) {
     Object.defineProperty(ctor, 'super_', {
         value: superCtor,
@@ -368,6 +385,7 @@ module.exports = {
     callbackify,
     inherits,
     deprecate,
+    debuglog,
     types,
     isDeepStrictEqual,
     TextEncoder,

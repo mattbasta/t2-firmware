@@ -16,6 +16,18 @@ in the shapes Node gives them; and the pure-JS core modules — `events`, `util`
 modules (`fs`, `net`, `child_process`) — those are Phase 2's gate, and the loader
 reads files through what txiki already exposes.
 
+## 0. Status
+
+Steps 1-5 are done. On both x86-64 and mipsel-under-QEMU, `runtime/test/run.sh`
+passes ~200 assertions across five suites (buffer, process, core modules, stream,
+loader). What remains for the gate is the era-package corpus and wiring both
+architectures into CI — see §5, including the `binfmt_misc` decision.
+
+| | Eager | Lazy |
+|---|---|---|
+| Kernel (bootstrap, loader, Buffer, process) | 32,909 B | — |
+| Core modules (assert, events, querystring, stream, string_decoder, url, util) | — | 80,930 B |
+
 ## 1. How the runtime attaches to txiki
 
 Phase 0 cross-built and measured txiki's own `tjs` binary. Phase 1 is the first
@@ -241,12 +253,18 @@ publish is not reconstructed from memory at the end.
 
 ## 6. Budget and risks
 
-- **Size.** Phase 0 shipped 6,164,468 bytes against the strategy's 8 MB gate, with
-  sqlite on and neither LTO nor `MinSizeRel` applied. Phase 1 adds bytecode for
-  perhaps 15–25k lines of JS plus a little C. Headroom looks adequate, and LTO,
-  `MinSizeRel`, and dropping txiki's `run-main`/`run-repl` bundles are all still
-  unspent. Track the per-commit size delta from the first Phase 1 commit rather than
-  discovering it at the end.
+- **Size.** Phase 0 shipped 6,164,468 bytes against the strategy's 8 MB gate.
+  Through step 5 the cross-built `node` is **6,283,268 bytes** — 118,800 more,
+  which is almost exactly the 114 KB of embedded bytecode the kernel and the
+  standard library add. LTO, `MinSizeRel`, and dropping txiki's
+  `run-main`/`run-repl` bundles all remain unspent.
+
+  One trap worth recording: txiki applies `-ffunction-sections`/`--gc-sections`
+  with `target_link_options(tjs-cli ...)`, i.e. to *its own* executable only. Our
+  target inherited the compile half but not the link half, and the first
+  cross-build of `node` came out at 7,400,580 bytes — 1.1 MB of dead code that
+  had nothing to do with anything Phase 1 added. `runtime/CMakeLists.txt` now
+  opts in explicitly. Any future target has to do the same.
 - **R3 (streams fidelity)** is the phase's main technical risk and is why `stream`
   is a port, not a reimplementation.
 - **Harvest provenance.** Every harvested file needs the Tier 2 header (project,

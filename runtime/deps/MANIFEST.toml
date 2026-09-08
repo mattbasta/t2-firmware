@@ -175,6 +175,28 @@ version = "1.3.0"
 harvest_paths = ["runtime/js/node/string_decoder.js"]
 notes = "Node's own StringDecoder. Harvested 2026-09-08 from the npm tarball (sha256 7d036900940345e423538371ae45b23bfaf4b454bc398c6ba604063b0597b3ad); the only change is require('safe-buffer') -> require('buffer'). Harvested rather than written because the hard part — holding a partial UTF-8 sequence across a chunk boundary — is exactly what this implementation has had right for a decade."
 
+[[dependency]]
+name = "readable-stream"
+tier = 2
+intake = "harvest"
+upstream = "https://github.com/nodejs/readable-stream"
+spdx = "MIT"
+status = "active"
+version = "3.6.2"
+harvest_paths = ["runtime/js/node/stream/lib/**/*.js", "runtime/js/node/stream/errors.js"]
+notes = "Node's stream implementation, extracted. Ported rather than reimplemented because stream semantics are the subtlest surface in the runtime (strategy R3). Harvested 2026-09-08 from the npm tarball (sha256 edd866c05e318aa9c091763eebdd4207409b7a7648be19c5317a96047305ab5d). v3.6.2 over v4.x deliberately: 2,720 lines against 6,866 on a 64 MB board, and its three dependencies (inherits, util-deprecate, string_decoder) are things this runtime already has exactly, so they became requires of our own modules instead of vendored packages. Revisit v4 if something needs compose() or the newer promises surface. The entry point (index.js) is first-party: readable-stream's own readable.js begins with require('stream'), which here would be this module requiring itself."
+
+[[dependency]]
+name = "nodejs-legacy-streams"
+tier = 2
+intake = "harvest"
+upstream = "https://github.com/nodejs/node"
+spdx = "MIT"
+status = "active"
+version = "v18.20.4"
+harvest_paths = ["runtime/js/node/stream/lib/internal/streams/stream.js"]
+notes = "Node's lib/internal/streams/legacy.js — the Stream base class that Readable and Writable extend. Replaces readable-stream's own internal/streams/stream.js, whose Node variant is require('stream') (self-referential here) and whose browser variant is bare EventEmitter (which would leave `readable instanceof stream.Stream` false). De-primordialized: two identifiers, ArrayIsArray and ObjectSetPrototypeOf."
+
 # ── Tier D — dev and CI tooling (host-side only) ─────────────────────────────
 
 [[dependency]]
