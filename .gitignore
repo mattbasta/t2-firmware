@@ -5,3 +5,6 @@ spid
 usbexecd
 .nyc_output
 coverage
+
+# The loader's fixtures need real node_modules trees: resolution keys on the name.
+!runtime/test/loader/**/node_modules/

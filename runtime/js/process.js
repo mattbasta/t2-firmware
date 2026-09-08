@@ -254,7 +254,15 @@ export function createProcess(native, argv) {
     // preventDefault — we only want the notification. tessel-export.js relies on
     // process.on('exit'), so this is part of the device API floor.
     globalThis.addEventListener('beforeunload', () => {
-        runExitHandlers(process.exitCode ?? 0);
+        const code = process.exitCode ?? 0;
+
+        runExitHandlers(code);
+
+        // Node exits with process.exitCode when the loop drains, not just when
+        // exit() is called explicitly. Nothing else consults it, so say so here.
+        if (code !== 0) {
+            tjs.exit(code);
+        }
     });
 
     return process;

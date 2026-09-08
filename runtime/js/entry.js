@@ -6,10 +6,17 @@
 // CommonJS loader and the core modules arrive in the steps after this one —
 // see runtime/docs/phase1-plan.md §4.
 
-import { Buffer, SlowBuffer } from './buffer.js';
+import nodePath from 'tjs:path';
+
+import { Buffer, SlowBuffer, kMaxLength } from './buffer.js';
+import { Module, defineCore, definePending, makeRequire, runMain, setNative } from './module.js';
 import { createProcess, drainTicks, handleUncaught } from './process.js';
 
 const native = globalThis.__t2native;
+
+function resolveValue(value) {
+    return typeof value === 'function' ? value() : value;
+}
 
 // Bootstrap-only. User code must never reach the raw primitives.
 delete globalThis.__t2native;
@@ -25,42 +32,40 @@ Options:
   -h, --help            print this message
 `;
 
-// POSIX-only, and temporary: it goes away when the loader wires up node:path,
-// which is Node's own implementation and already compiled into the binary.
-function dirnameOf(p) {
-    const i = p.lastIndexOf('/');
+// Core modules that exist today. Everything else the era expects is registered
+// below as pending, so `require('fs')` says when it is coming rather than
+// claiming the module does not exist.
+function registerCoreModules() {
+    defineCore('path', nodePath);
+    defineCore('buffer', { Buffer, SlowBuffer, kMaxLength, constants: { MAX_LENGTH: kMaxLength } });
+    defineCore('module', Module);
+    defineCore('console', console);
+    defineCore('timers', {
+        setTimeout,
+        clearTimeout,
+        setInterval,
+        clearInterval,
+        setImmediate,
+        clearImmediate
+    });
 
-    if (i < 0) {
-        return '.';
+    const pending = {
+        'Phase 1 step 4': ['events', 'util', 'assert', 'querystring', 'string_decoder', 'url'],
+        'Phase 1 step 5': ['stream'],
+        'Phase 2': ['fs', 'net', 'child_process', 'os', 'tty', 'dns'],
+        'Phase 3': ['http', 'https', 'crypto', 'zlib', 'dgram', 'tls']
+    };
+
+    for (const [phase] of Object.entries(pending)) {
+        for (const name of pending[phase]) {
+            definePending(
+                name,
+                `Cannot find module '${name}': it is a core module this runtime has not ` +
+                `implemented yet — planned for ${phase}. See runtime/docs/phase1-plan.md.`
+            );
+        }
     }
-
-    return i === 0 ? '/' : p.slice(0, i);
 }
-
-// Node strips a leading #! line. Blanking it in place rather than removing the
-// line keeps every subsequent line number honest in stack traces.
-function stripShebang(source) {
-    return source.startsWith('#!') ? source.replace(/^#![^\n]*/, '') : source;
-}
-
-// The wrapper Node has used since 0.x. Compiling it as a classic script is the
-// whole reason evalScript exists — the filename passed here is what shows up in
-// stack traces.
-const WRAPPER_HEAD = '(function (exports, require, module, __filename, __dirname) {';
-const WRAPPER_TAIL = '\n});';
-
-function require(specifier) {
-    const err = new Error(
-        `Cannot find module '${specifier}' — the CommonJS loader is not wired up yet ` +
-        `(Phase 1, step 3; see runtime/docs/phase1-plan.md)`
-    );
-
-    err.code = 'MODULE_NOT_FOUND';
-
-    throw err;
-}
-
-require.cache = Object.create(null);
 
 function installGlobals() {
     Object.defineProperty(globalThis, 'Buffer', {
@@ -91,29 +96,14 @@ function installGlobals() {
 }
 
 function runScript(scriptPath, scriptArgs) {
-    const filename = native.realpathSync(scriptPath);
-    const dirname = dirnameOf(filename);
-    const source = stripShebang(native.readFileSync(filename));
-
     // Node's argv for a script run: [execPath, resolvedScript, ...scriptArgs].
+    const filename = native.realpathSync(scriptPath);
+
     process.argv = [process.execPath, filename, ...scriptArgs];
 
-    const wrapper = native.evalScript(WRAPPER_HEAD + source + WRAPPER_TAIL, filename);
-
-    const module = {
-        id: '.',
-        filename,
-        path: dirname,
-        exports: {},
-        loaded: false,
-        children: [],
-        parent: null
-    };
-
-    wrapper.call(module.exports, module.exports, require, module, filename, dirname);
-    module.loaded = true;
-
-    return module;
+    return runMain(filename, main => {
+        process.mainModule = main;
+    });
 }
 
 let process;
@@ -131,11 +121,41 @@ function installProcess(argv) {
     return process;
 }
 
+// Node gives -e/-p a `require` resolved against the working directory. These go
+// on the global rather than through the CommonJS wrapper on purpose: a wrapper
+// function's body has no completion value, and the completion value is the
+// entire point of -p.
+function evalWithRequire(code) {
+    const dir = process.cwd();
+    const filename = nodePath.join(dir, '[eval]');
+    const module = new Module(filename, null);
+
+    module.filename = filename;
+    module.path = dir;
+
+    globalThis.require = makeRequire(module);
+    globalThis.module = module;
+    globalThis.exports = module.exports;
+    globalThis.__filename = filename;
+    globalThis.__dirname = dir;
+
+    return native.evalScript(code, '[eval]');
+}
+
 function main() {
     const args = tjs.args.slice(1);
 
     installGlobals();
-    installProcess([tjs.exePath, ...args]);
+    installProcess([resolveValue(tjs.exePath), ...args]);
+
+    setNative({
+        evalScript: native.evalScript,
+        readFileSync: native.readFileSync,
+        realpathSync: native.realpathSync,
+        pathKind: native.pathKind,
+        cwd: () => process.cwd()
+    });
+    registerCoreModules();
 
     if (args.length === 0) {
         // The REPL is Phase 4; until then, no arguments is a usage error.
@@ -171,7 +191,7 @@ function main() {
                 return;
             }
 
-            const result = native.evalScript(args[1], '[eval]');
+            const result = evalWithRequire(args[1]);
 
             if (arg === '-p' || arg === '--print') {
                 console.log(result);

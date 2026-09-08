@@ -91,6 +91,7 @@ trap 'rm -rf "$STAGE"' EXIT
     --format=esm \
     --platform=neutral \
     --target=es2022 \
+    --external:tjs:path \
     --outfile="$STAGE/entry.js"
 
 # tjsc is EXCLUDE_FROM_ALL upstream and links only quickjs, so this configures
