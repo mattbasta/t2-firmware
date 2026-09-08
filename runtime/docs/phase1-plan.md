@@ -296,5 +296,22 @@ publish is not reconstructed from memory at the end.
 3. **First-party JS lives in `runtime/js/`**, beside `runtime/src/`, keeping the
    fork's diff to the single entrypoint patch.
 
-Still open: whether the Phase 1 CI runner gets `binfmt_misc` (see §5) — decide before
-the corpus job is written, not after.
+4. **Both rings for `child_process`, not one** (decided). CI registers the
+   `qemu-mipsel` binfmt_misc handler and runs the suites under emulation; the
+   Tessel signs off the Phase 2 gate. Binfmt makes `execve` of a MIPS binary work,
+   but it does not touch the other QEMU limitation Phase 0 found — `clone(CLONE_VM)`
+   and `vfork` do not share memory under qemu-user, so libuv falls back to `fork`
+   and emulated `child_process` exercises a different path than the board does.
+   A green CI run is therefore an early-warning system, not a signoff. `ci.yml`
+   asserts the handler is registered rather than assuming it, so a missing
+   registration fails as itself instead of as a mysterious runtime bug.
+
+Still open:
+
+- **What `process.version` should report.** It currently tracks txiki's version,
+  which reads as `v26.6.0` by coincidence rather than by decision. Era code
+  feature-detects on it, and claiming Node 26 invites programs down modern paths
+  this runtime cannot serve yet. The honest answer is the Node compatibility level
+  we actually implement, which is not knowable until Phase 2 and 3 land fs, net
+  and http. Revisit then; `process.versions` already reports the real component
+  versions.

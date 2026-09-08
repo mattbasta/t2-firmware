@@ -11,7 +11,11 @@ set -eu
 TEST=$(cd "$(dirname "$0")" && pwd)
 NODE=${1:-$TEST/../../build/host-node/node}
 
-[ -x "${NODE%% *}" ] || { echo "run.sh: no runtime at $NODE" >&2; exit 1; }
+# NODE may be a path ("build/host-node/node") or a wrapper command whose first
+# word is resolved through PATH ("qemu-mipsel-static build/mipsel/node"), so
+# check with command -v rather than a plain -x on the first word.
+command -v "${NODE%% *}" >/dev/null 2>&1 \
+    || { echo "run.sh: cannot run '${NODE%% *}'" >&2; exit 1; }
 
 status=0
 

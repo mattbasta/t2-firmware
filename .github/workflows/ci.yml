@@ -41,15 +41,13 @@ jobs:
         run: |
           cmake -S runtime -B build/host \
             -DBUILD_WITH_WASM=OFF -DBUILD_WITH_FFI=OFF -DBUILD_WITH_MIMALLOC=OFF
-          cmake --build build/host -j"$(nproc)"
+          cmake --build build/host --target t2-node -j"$(nproc)"
+      - name: Fetch era-package corpus
+        if: steps.guard.outputs.present == 'true'
+        run: runtime/test/corpus/fetch.sh
       - name: Test (host)
         if: steps.guard.outputs.present == 'true'
-        run: |
-          if [ -x runtime/scripts/test-host.sh ]; then
-            runtime/scripts/test-host.sh build/host
-          else
-            build/host/tjs eval "console.log('host smoke ok')"
-          fi
+        run: runtime/test/run.sh build/host/node
 
   runtime-cross:
     name: runtime cross-build (mipsel_24kc, offline) + QEMU smoke + size gate
@@ -82,7 +80,7 @@ jobs:
       - name: Size gate
         if: steps.guard.outputs.ready == 'true'
         run: |
-          BIN=build/mipsel/tjs
+          BIN=build/mipsel/node
           KB=$(( $(stat -c %s "$BIN") / 1024 ))
           echo "stripped mipsel binary: ${KB} KB (warn ${SIZE_BUDGET_WARN_KB}, hard ${SIZE_BUDGET_HARD_KB})" \
             | tee -a "$GITHUB_STEP_SUMMARY"
@@ -91,17 +89,34 @@ jobs:
       - name: NEEDED allowlist (no system libraries)
         if: steps.guard.outputs.ready == 'true'
         run: |
-          readelf -d build/mipsel/tjs | awk '/NEEDED/{print $NF}' | tr -d '[]' | sort > needed.txt
+          readelf -d build/mipsel/node | awk '/NEEDED/{print $NF}' | tr -d '[]' | sort > needed.txt
           cat needed.txt
           # Allowed: musl libc, libgcc_s, and libatomic when recorded in the manifest.
           if grep -vE '^(libc\.so|ld-musl-.*|libgcc_s\.so.*|libatomic\.so.*)$' needed.txt; then
             echo "unexpected dynamic dependency — see runtime/DEPENDENCIES.md (no system libraries)"
             exit 1
           fi
-      - name: QEMU tests (numerics probe per PR; test262 numerics slice on schedule/dispatch)
+      - name: Install qemu-user-static (registers the mipsel binfmt_misc handler)
+        if: steps.guard.outputs.ready == 'true'
+        run: sudo apt-get install -y --no-install-recommends qemu-user-static
+      - name: Verify binfmt_misc routing
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          # Asserted rather than assumed. Without this handler the host kernel
+          # answers ENOEXEC to execve of a MIPS binary, so anything that spawns
+          # — child_process, which is Phase 2's gate — fails in a way that looks
+          # like a runtime bug rather than a missing kernel registration.
+          test -e /proc/sys/fs/binfmt_misc/qemu-mipsel \
+            || { echo "qemu-mipsel binfmt handler not registered"; exit 1; }
+          ./build/mipsel/node -p '"binfmt ok: " + process.arch'
+      - name: QEMU engine tests (numerics probe per PR; test262 numerics slice on schedule/dispatch)
         if: steps.guard.outputs.ready == 'true'
         env:
           TEST262_QUICK: ${{ github.event_name == 'pull_request' && '1' || '0' }}
-        run: |
-          sudo apt-get install -y --no-install-recommends qemu-user-static
-          runtime/scripts/test-qemu.sh build/mipsel build/sdk
+        run: runtime/scripts/test-qemu.sh build/mipsel build/sdk
+      - name: Fetch era-package corpus
+        if: steps.guard.outputs.ready == 'true'
+        run: runtime/test/corpus/fetch.sh
+      - name: Runtime suites on mipsel
+        if: steps.guard.outputs.ready == 'true'
+        run: runtime/test/run.sh "qemu-mipsel-static build/mipsel/node"

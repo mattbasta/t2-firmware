@@ -6,6 +6,15 @@
 
 const VERSIONS = tjs.engine.versions;
 
+// process.version is what era code feature-detects on, so it is not free to be
+// arbitrary. Today it tracks txiki's version, which lands on v26 by coincidence
+// rather than by decision — and a program reading that will assume a Node 26
+// surface, including things this runtime does not have yet. What it should
+// report is the Node compatibility level we actually implement, which is not
+// settled until Phase 2 and 3 fill in fs, net and http. Recorded as an open
+// question in runtime/docs/phase1-plan.md §7 rather than silently guessed at.
+const NODE_COMPAT_VERSION = `v${VERSIONS.tjs}`;
+
 // Some tjs surfaces are plain properties, others accessors or functions;
 // resolve either shape rather than guessing.
 function resolve(value) {
@@ -219,7 +228,7 @@ export function createProcess(native, argv) {
         arch: native.arch,
         title: 'node',
         exitCode: undefined,
-        version: `v${VERSIONS.tjs}`,
+        version: NODE_COMPAT_VERSION,
         versions: Object.freeze({ ...VERSIONS, node: VERSIONS.tjs }),
         release: Object.freeze({ name: 'node' }),
 
