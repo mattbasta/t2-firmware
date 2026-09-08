@@ -18,7 +18,9 @@ add_executable(t2-node
     src/main.c
     src/natives.c
     src/bundles/entry.c
+    src/bundles/core_modules.c
 )
+target_include_directories(t2-node PRIVATE src)
 target_link_libraries(t2-node tjs)
 set_target_properties(t2-node PROPERTIES
     C_STANDARD 11

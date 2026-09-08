@@ -49,7 +49,7 @@ fork = "https://github.com/mattbasta/txiki.js"
 spdx = "MIT"
 status = "active"
 upstream_base = "1f8b99f75a4119b49e72610e73ed2b08abed9568"  # upstream master at fork
-notes = "Platform base (WinterTC surface, build system). Carries quickjs-ng, libuv, mbedTLS, libwebsockets transitively via its own submodules — one source of truth for those pins. Fork branch t2/v26.6.0+tessel.2 flips WAMR/FFI/mimalloc defaults OFF and adds an entrypoint override to TJSRunOptions so the Tessel runtime can embed txiki rather than patch its CLI (upstreamable; see runtime/docs/phase1-plan.md §1). Patches mirrored in runtime/deps/patches/txiki.js/."
+notes = "Platform base (WinterTC surface, build system). Carries quickjs-ng, libuv, mbedTLS, libwebsockets transitively via its own submodules — one source of truth for those pins. Fork branch t2/v26.6.0+tessel.3 flips WAMR/FFI/mimalloc defaults OFF, adds an entrypoint override to TJSRunOptions so the Tessel runtime can embed txiki rather than patch its CLI, and adds qjsc -S to force script (non-module) compilation, which autodetection cannot produce. All three are upstreamable; see runtime/docs/phase1-plan.md §1. Patches mirrored in runtime/deps/patches/txiki.js/."
 
 [[dependency]]
 name = "quickjs-ng"
@@ -150,6 +150,30 @@ spdx = "blessing"              # public domain
 status = "active"
 breaks_if_removed = "node:sqlite parity and on-device storage."
 notes = "SHIPS IN THE DEFAULT IMAGE (owner decision, 2026-08-30): ~900 KB flash accepted for storage capability. C89, famously 32-bit clean."
+
+# ── Tier 2 — harvested, then owned ───────────────────────────────────────────
+
+[[dependency]]
+name = "events"
+tier = 2
+intake = "harvest"
+upstream = "https://github.com/browserify/events"
+spdx = "MIT"
+status = "active"
+version = "3.3.0"
+harvest_paths = ["runtime/js/node/events.js"]
+notes = "Node's own EventEmitter, extracted, dependency-free, and unmodified by us. Harvested 2026-09-08 from the npm tarball (sha256 2c30dd630b58299bdfaac8688f763c6f312d29779c500b1e3701a1d4fb3b534b). Verified against 16 of its own upstream test files; the remaining 5 need npm helper packages (has, has-symbols, isarray, functions-have-names) that are not vendored, and belong with the era-package corpus in the Phase 1 gate."
+
+[[dependency]]
+name = "string_decoder"
+tier = 2
+intake = "harvest"
+upstream = "https://github.com/nodejs/string_decoder"
+spdx = "MIT"
+status = "active"
+version = "1.3.0"
+harvest_paths = ["runtime/js/node/string_decoder.js"]
+notes = "Node's own StringDecoder. Harvested 2026-09-08 from the npm tarball (sha256 7d036900940345e423538371ae45b23bfaf4b454bc398c6ba604063b0597b3ad); the only change is require('safe-buffer') -> require('buffer'). Harvested rather than written because the hard part — holding a partial UTF-8 sequence across a chunk boundary — is exactly what this implementation has had right for a decade."
 
 # ── Tier D — dev and CI tooling (host-side only) ─────────────────────────────
 

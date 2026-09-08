@@ -1,2 +1,2 @@
 # git submodule pins under runtime/deps/ — written by scripts/deps-check.py --snapshot
-f6a055228357edaa28d2950720b608e528a7c4b8 runtime/deps/txiki.js
+950ddc596bfec08880e9f4d8732ed30fcb313376 runtime/deps/txiki.js

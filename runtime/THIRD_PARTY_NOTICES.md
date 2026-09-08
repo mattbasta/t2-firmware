@@ -8,6 +8,7 @@ The Tessel 2 runtime statically links or incorporates the following third-party 
 |---|---|---|
 | ada | Apache-2.0 | https://github.com/ada-url/ada |
 | esbuild | MIT | https://github.com/evanw/esbuild |
+| events | MIT | https://github.com/browserify/events |
 | libuv | MIT | https://github.com/libuv/libuv |
 | libwebsockets | MIT | https://github.com/warmcat/libwebsockets |
 | llhttp | MIT | https://github.com/nodejs/llhttp |
@@ -15,5 +16,6 @@ The Tessel 2 runtime statically links or incorporates the following third-party 
 | miniz | MIT | https://github.com/richgel999/miniz |
 | quickjs-ng | MIT | https://github.com/quickjs-ng/quickjs |
 | sqlite3 | blessing | https://sqlite.org/ |
+| string_decoder | MIT | https://github.com/nodejs/string_decoder |
 | tweetnacl | Unlicense | https://tweetnacl.cr.yp.to/ |
 | txiki.js | MIT | https://github.com/saghul/txiki.js |

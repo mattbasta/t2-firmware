@@ -376,6 +376,63 @@ static JSValue t2_run_microtasks(JSContext *ctx, JSValue this_val, int argc, JSV
 #define T2_ARCH "unknown"
 #endif
 
+/* coreModuleNames() -> string[]
+ *
+ * The names only. The loader needs to know what counts as a core module before
+ * it touches the filesystem, and answering that must not cost a deserialization
+ * of every module in the table. */
+static JSValue t2_core_module_names(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    JSValue names = JS_NewArray(ctx);
+    uint32_t i = 0;
+
+    for (const t2_builtin_t *p = t2_core_modules; p->name != NULL; ++p) {
+        JS_SetPropertyUint32(ctx, names, i++, JS_NewString(ctx, p->name));
+    }
+
+    return names;
+}
+
+/* loadCoreModule(name) -> CommonJS wrapper function, or null
+ *
+ * Deserializes one module's bytecode and evaluates it. The blob is a script
+ * whose completion value is
+ *
+ *     (function (exports, require, module, __filename, __dirname) { ... })
+ *
+ * so what comes back is the wrapper, ready for the loader to call with a real
+ * module object. Nothing is deserialized until this runs, which is the whole
+ * point: a program that never requires node:events never pays for it. */
+static JSValue t2_load_core_module(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    const char *name = JS_ToCString(ctx, argv[0]);
+
+    if (!name) {
+        return JS_EXCEPTION;
+    }
+
+    const t2_builtin_t *found = NULL;
+
+    for (const t2_builtin_t *p = t2_core_modules; p->name != NULL; ++p) {
+        if (strcmp(p->name, name) == 0) {
+            found = p;
+            break;
+        }
+    }
+
+    JS_FreeCString(ctx, name);
+
+    if (!found) {
+        return JS_NULL;
+    }
+
+    JSValue obj = JS_ReadObject(ctx, found->data, found->size, JS_READ_OBJ_BYTECODE);
+
+    if (JS_IsException(obj)) {
+        return obj;
+    }
+
+    return JS_EvalFunction(ctx, obj);
+}
+
 void t2_register_natives(JSContext *ctx) {
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue natives = JS_NewObjectProto(ctx, JS_NULL);
@@ -387,6 +444,8 @@ void t2_register_natives(JSContext *ctx) {
     JS_SetPropertyStr(ctx, natives, "writeSync", JS_NewCFunction(ctx, t2_write_sync, "writeSync", 2));
     JS_SetPropertyStr(ctx, natives, "isTTY", JS_NewCFunction(ctx, t2_is_tty, "isTTY", 1));
     JS_SetPropertyStr(ctx, natives, "runMicrotasks", JS_NewCFunction(ctx, t2_run_microtasks, "runMicrotasks", 0));
+    JS_SetPropertyStr(ctx, natives, "coreModuleNames", JS_NewCFunction(ctx, t2_core_module_names, "coreModuleNames", 0));
+    JS_SetPropertyStr(ctx, natives, "loadCoreModule", JS_NewCFunction(ctx, t2_load_core_module, "loadCoreModule", 1));
     JS_SetPropertyStr(ctx, natives, "platform", JS_NewString(ctx, T2_PLATFORM));
     JS_SetPropertyStr(ctx, natives, "arch", JS_NewString(ctx, T2_ARCH));
 

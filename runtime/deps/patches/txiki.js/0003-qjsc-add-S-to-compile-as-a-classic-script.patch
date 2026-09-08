@@ -1,0 +1,57 @@
+From 950ddc596bfec08880e9f4d8732ed30fcb313376 Mon Sep 17 00:00:00 2001
+From: Matt Basta <mattbasta@mac.lan>
+Date: Tue, 8 Sep 2026 17:37:18 -0400
+Subject: [PATCH 3/3] qjsc: add -S to compile as a classic script
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Autodetection cannot produce a script. JS_DetectModule starts from
+is_module = true and only returns false when parsing the input as a module
+throws, so any file without module syntax — which parses fine either way —
+is compiled as a module. -m forces module; nothing forced the other side.
+
+That matters for embedders precompiling CommonJS. Modules are strict, so a
+CJS file compiled as a module silently gains strict-mode semantics it never
+asked for, and evaluating the bytecode yields a module-evaluation promise
+rather than the script's completion value.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ src/qjsc.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/qjsc.c b/src/qjsc.c
+index 727c28ad..ed68947d 100644
+--- a/src/qjsc.c
++++ b/src/qjsc.c
+@@ -281,6 +281,7 @@ void help(void) {
+            "-p prefix   set a prefix for the generated variables\n"
+            "-n name     set the module name\n"
+            "-m          compile as Javascript module (default=autodetect)\n"
++           "-S          compile as a classic script (not a module)\n"
+            "-s          strip source code (if -ss is specified debugging info is also stripped)\n",
+            JS_GetVersion());
+     exit(1);
+@@ -305,7 +306,7 @@ int main(int argc, char **argv) {
+     strip = 0;
+ 
+     for (;;) {
+-        c = getopt(argc, argv, "ho:p:n:ms");
++        c = getopt(argc, argv, "ho:p:n:msS");
+         if (c == -1)
+             break;
+         switch (c) {
+@@ -323,6 +324,9 @@ int main(int argc, char **argv) {
+             case 'm':
+                 module = 1;
+                 break;
++            case 'S':
++                module = 0;
++                break;
+             case 's':
+                 strip++;
+                 break;
+-- 
+2.50.1 (Apple Git-155)
+

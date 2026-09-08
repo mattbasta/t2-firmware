@@ -9,7 +9,7 @@
 import nodePath from 'tjs:path';
 
 import { Buffer, SlowBuffer, kMaxLength } from './buffer.js';
-import { Module, defineCore, definePending, makeRequire, runMain, setNative } from './module.js';
+import { Module, coreModuleNames, defineCore, defineLazyCore, definePending, makeRequire, runMain, setNative } from './module.js';
 import { createProcess, drainTicks, handleUncaught } from './process.js';
 
 const native = globalThis.__t2native;
@@ -49,6 +49,16 @@ function registerCoreModules() {
         clearImmediate
     });
 
+    // Everything under runtime/js/node/ is available by name, but stays as
+    // undeserialized bytecode until required.
+    for (const name of native.coreModuleNames()) {
+        defineLazyCore(name);
+    }
+
+    Module.builtinModules = coreModuleNames();
+
+    const implemented = new Set(Module.builtinModules);
+
     const pending = {
         'Phase 1 step 4': ['events', 'util', 'assert', 'querystring', 'string_decoder', 'url'],
         'Phase 1 step 5': ['stream'],
@@ -58,6 +68,10 @@ function registerCoreModules() {
 
     for (const [phase] of Object.entries(pending)) {
         for (const name of pending[phase]) {
+            if (implemented.has(name)) {
+                continue;
+            }
+
             definePending(
                 name,
                 `Cannot find module '${name}': it is a core module this runtime has not ` +
@@ -90,7 +104,9 @@ function installGlobals() {
         globalThis.clearImmediate = handle => clearTimeout(handle);
     }
 
-    // GLOBAL and root were removed in Node 12; era code still reaches for them.
+    // `global` is current Node and used everywhere; GLOBAL and root were removed
+    // in Node 12 and era code still reaches for them.
+    globalThis.global = globalThis;
     globalThis.GLOBAL = globalThis;
     globalThis.root = globalThis;
 }
@@ -153,6 +169,7 @@ function main() {
         readFileSync: native.readFileSync,
         realpathSync: native.realpathSync,
         pathKind: native.pathKind,
+        loadCoreModule: native.loadCoreModule,
         cwd: () => process.cwd()
     });
     registerCoreModules();

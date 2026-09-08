@@ -32,6 +32,58 @@ export function definePending(name, message) {
     PENDING.set(name, message);
 }
 
+// Core modules that ship as their own bytecode blobs (runtime/js/node/). Only
+// the names are known up front — nothing is deserialized until something
+// actually requires the module, which is what keeps the standard library off
+// the startup path.
+const LAZY = new Set();
+const LAZY_MODULES = new Map();
+
+export function defineLazyCore(name) {
+    LAZY.add(name);
+}
+
+export function coreModuleNames() {
+    return [...CORE.keys(), ...LAZY].sort();
+}
+
+function isCore(name) {
+    return CORE.has(name) || LAZY.has(name);
+}
+
+function loadCore(name) {
+    if (CORE.has(name)) {
+        return CORE.get(name);
+    }
+
+    const existing = LAZY_MODULES.get(name);
+
+    if (existing) {
+        return existing.exports;
+    }
+
+    const wrapper = native.loadCoreModule(name);
+
+    if (!wrapper) {
+        return undefined;
+    }
+
+    const module = new Module(name, null);
+
+    module.filename = name;
+    module.path = '';
+    module.paths = [];
+
+    // Registered before the body runs, so a cycle between core modules
+    // terminates the same way one between files on disk does.
+    LAZY_MODULES.set(name, module);
+
+    wrapper.call(module.exports, module.exports, makeRequire(module), module, name, '');
+    module.loaded = true;
+
+    return module.exports;
+}
+
 function stripShebang(source) {
     return source.startsWith('#!') ? source.replace(/^#![^\n]*/, '') : source;
 }
@@ -329,7 +381,7 @@ class Module {
     static _resolveFilename(request, parent) {
         const bare = request.startsWith('node:') ? request.slice(5) : request;
 
-        if (CORE.has(bare) || PENDING.has(bare)) {
+        if (isCore(bare) || PENDING.has(bare)) {
             return bare;
         }
 
@@ -358,8 +410,8 @@ class Module {
     static _load(request, parent) {
         const bare = request.startsWith('node:') ? request.slice(5) : request;
 
-        if (CORE.has(bare)) {
-            return CORE.get(bare);
+        if (isCore(bare)) {
+            return loadCore(bare);
         }
 
         if (PENDING.has(bare)) {

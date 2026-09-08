@@ -22,6 +22,7 @@ eq(typeof process.env, 'object', 'env');
 eq(process.cwd().startsWith('/'), true, 'cwd is absolute');
 eq(typeof process.versions.node, 'string', 'versions.node');
 eq(typeof process.versions.quickjs, 'string', 'versions.quickjs');
+eq(globalThis.global === globalThis, true, 'global');
 eq(globalThis.GLOBAL === globalThis, true, 'GLOBAL alias restored');
 eq(typeof setImmediate, 'function', 'setImmediate');
 

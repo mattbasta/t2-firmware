@@ -7,4 +7,4 @@
 [submodule "runtime/deps/txiki.js"]
 	path = runtime/deps/txiki.js
 	url = https://github.com/mattbasta/txiki.js
-	branch = t2/v26.6.0+tessel.2
+	branch = t2/v26.6.0+tessel.3

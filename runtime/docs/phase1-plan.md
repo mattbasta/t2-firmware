@@ -131,7 +131,17 @@ We mirror it for `runtime/js/**`, with two constraints to record:
   mipsel works because both are little-endian (proven in Phase 0). A big-endian
   target would need regeneration on a big-endian host; not our target, but it
   belongs in the notes.
-- **Bundler: esbuild, as txiki does it** (decided). Tier D, and out of the release
+- **The standard library is compiled per module, not bundled.** Each file under
+  `runtime/js/node/` becomes its own bytecode blob, wrapped in the CommonJS wrapper
+  and compiled with `tjsc -S` as a *script*, so evaluating the blob yields the
+  wrapper function. `loadCoreModule(name)` in `natives.c` deserializes one on
+  demand. This is what makes the laziness rule below real rather than aspirational:
+  as of step 4 the kernel is ~33 KB deserialized at every start, and the six core
+  modules are a further ~33 KB that a program pays for only if it requires them.
+  The `-S` flag is fork patch 0003 — `JS_DetectModule` answers "module" for
+  anything that parses as one, so autodetection cannot produce a script, and a
+  CommonJS file compiled as a module would silently become strict-mode.
+- **Bundler: esbuild for the kernel** (decided). Tier D, and out of the release
   path because the generated `.c` is committed. Unlike txiki — which shells out to
   `npx esbuild` (`Makefile:19`) — `runtime/scripts/build-js.sh` fetches a
   sha256-verified esbuild binary from the registry and caches it in the build
@@ -224,7 +234,9 @@ publish is not reconstructed from memory at the end.
 | `process.nextTick` ordering is exact only in the main-script window | The bootstrap drains the tick queue before the job queue when the entry script returns, which is where ordering-sensitive era code lives. Inside later turns, ticks ride `queueMicrotask` and so interleave with promise jobs in registration order rather than always preceding them. | Drive the drain from JS one job at a time (`runMicrotaskJob()` returning a bool), at the cost of a JS↔C call per job. |
 | `process.stdout`/`stderr` are not Writable streams | `node:stream` is step 5. They carry `write`/`end`/`fd`/`isTTY` and an EventEmitter shape, which is the surface era code touches. | Falls out of step 5. |
 | `process.memoryUsage()` returns zeros | Nothing on txiki's public surface reports RSS. | A native over `uv_resident_set_memory()`. |
-| `process` is not an `instanceof EventEmitter` | `node:events` is step 4; `process` carries its own minimal emitter until then. | Falls out of step 4. |
+| `process` is not an `instanceof EventEmitter` | `node:events` exists as of step 4, but `process` is built before the loader runs, so it still carries its own minimal emitter. | Have the bootstrap load `node:events` once the loader is up and re-base `process` on it. |
+| `util.inspect` output is close to Node's, not identical | Node's inspect has years of formatting rules — column budgets, array grouping, getter annotation. This covers the shapes era code prints. | Open-ended; tighten only where something depends on it. |
+| `util.formatWithOptions` ignores its options | The options that matter are inspect's, and `format()` already routes object arguments through `inspect`. | Small, if anything needs it. |
 | `Buffer.allocUnsafe` allocates fresh, zeroed memory | Node hands back a slice of a shared pool, trading predictable memory for speed. On a 64 MB board that trade runs the wrong way. | Deliberate; not planned to close. |
 
 ## 6. Budget and risks

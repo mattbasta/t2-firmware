@@ -1,7 +1,7 @@
 From f6a055228357edaa28d2950720b608e528a7c4b8 Mon Sep 17 00:00:00 2001
 From: Matt Basta <mattbasta@mac.lan>
 Date: Mon, 7 Sep 2026 19:43:59 -0400
-Subject: [PATCH 2/2] Allow embedders to supply their own entrypoint
+Subject: [PATCH 2/3] Allow embedders to supply their own entrypoint
 
 TJS_Run() always evaluates the built-in CLI bundle, so a program that links
 libtjs_core cannot start anywhere but txiki's own command line without
