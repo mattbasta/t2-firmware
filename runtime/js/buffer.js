@@ -645,14 +645,16 @@ class Buffer extends Uint8Array {
     }
 }
 
-// Prototype methods are non-enumerable in Node; a plain Object.assign here would
-// make them show up in for...in over a Buffer.
+// Enumerable, because Node's are: its Buffer is a function with methods assigned
+// onto it, not a class, so Object.keys(Buffer.prototype).length is 95 in Node 26
+// and `for (k in buf)` yields the methods along with the indices. See the
+// enumerability fixup at the bottom of this file for why that matters.
 function define(target, methods) {
     for (const name of Object.keys(methods)) {
         Object.defineProperty(target, name, {
             value: methods[name],
             writable: true,
-            enumerable: false,
+            enumerable: true,
             configurable: true
         });
     }
@@ -968,5 +970,34 @@ Buffer.kMaxLength = K_MAX_LENGTH;
 function SlowBuffer(size) {
     return Buffer.alloc(size);
 }
+
+// Node's Buffer is a plain function with `Buffer.from = ...` and
+// `Buffer.prototype.write = ...` assigned onto it, so every one of those is
+// enumerable. Class statics and class prototype methods are non-enumerable by
+// spec, which is a difference real code trips over: safer-buffer rebuilds Buffer
+// with `for (key in Buffer)` and, against a class, copies nothing — iconv-lite
+// then calls Buffer.from on the empty result and dies with "not a function".
+//
+// Verified against Node 26: 12 enumerable own properties on Buffer, 95 on
+// Buffer.prototype.
+function matchNodeEnumerability(target, skip) {
+    for (const name of Object.getOwnPropertyNames(target)) {
+        if (skip.includes(name)) {
+            continue;
+        }
+
+        const descriptor = Object.getOwnPropertyDescriptor(target, name);
+
+        if (descriptor.enumerable || !descriptor.configurable) {
+            continue;
+        }
+
+        descriptor.enumerable = true;
+        Object.defineProperty(target, name, descriptor);
+    }
+}
+
+matchNodeEnumerability(Buffer, ['length', 'name', 'prototype']);
+matchNodeEnumerability(Buffer.prototype, ['constructor']);
 
 export { Buffer, SlowBuffer, K_MAX_LENGTH as kMaxLength };

@@ -224,8 +224,20 @@ Two suites, both required on x86 *and* QEMU-mipsel:
 
 - **Resolution fixtures** — Node's own `test/fixtures/node_modules` trees and the
   `require` resolution tests, harvested per Tier 2.
-- **Era corpus** — the packages the strategy names (`readable-stream`, `debug`,
-  `rimraf`, `graceful-fs`, `iconv-lite`), exercised as scripts.
+- **Era corpus** — `runtime/test/corpus/`, real npm packages pinned and
+  sha256-verified, fetched by `fetch.sh` into a gitignored `node_modules/` beside
+  the test so bare specifiers resolve through the real walk. Test-time only:
+  nothing here touches the release build path.
+
+  Three of the packages the strategy names turn out to be **gated on Phase 2**,
+  not Phase 1 — `debug` needs `tty`, `rimraf` and `graceful-fs` need `fs`. They
+  are in the corpus anyway, asserting that they resolve through a real
+  node_modules tree and fail exactly at the `fs`/`tty` boundary; Phase 2 turns
+  those assertions inside out. What runs fully today is `iconv-lite` (encodings,
+  Buffer, string_decoder, streams) and the published `readable-stream` — distinct
+  from our port, exercising our Buffer, events and util through third-party code,
+  including `require('string_decoder/')` whose trailing slash deliberately
+  bypasses the core module.
 
 **The wrinkle:** Phase 0 found that `tjs test` cannot run under qemu-user without
 binfmt_misc — the runner spawns a child per test file and `execve` of a MIPS binary

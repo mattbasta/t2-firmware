@@ -14,6 +14,14 @@ eq(Buffer.isBuffer(Buffer.alloc(3)), true, 'isBuffer');
 eq(new Buffer('hi').toString(), 'hi', 'legacy new Buffer(string)');
 eq(new Buffer(3).length, 3, 'legacy new Buffer(size)');
 
+// enumerability: Node's Buffer is a function with members assigned onto it, so
+// they are enumerable. safer-buffer rebuilds Buffer with for..in and gets an
+// empty object if they are not, which iconv-lite then calls .from on.
+eq(Object.keys(Buffer).includes('from'), true, 'Buffer statics are enumerable');
+eq(Object.keys(Buffer).includes('alloc'), true, 'Buffer.alloc enumerable');
+eq(Object.keys(Buffer.prototype).includes('toString'), true, 'prototype methods enumerable');
+eq(Object.keys(Buffer.prototype).includes('readUInt32BE'), true, 'read/write matrix enumerable');
+
 // encodings
 eq(Buffer.from('Hello').toString('hex'), '48656c6c6f', 'utf8 -> hex');
 eq(Buffer.from('48656c6c6f', 'hex').toString(), 'Hello', 'hex -> utf8');

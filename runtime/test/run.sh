@@ -15,7 +15,8 @@ NODE=${1:-$TEST/../../build/host-node/node}
 
 status=0
 
-for suite in buffer.js process.js core-modules.js stream.js loader/index.js; do
+# corpus/index.js self-skips when runtime/test/corpus/fetch.sh has not been run.
+for suite in buffer.js process.js core-modules.js stream.js loader/index.js corpus/index.js; do
     if ! $NODE "$TEST/$suite" one two; then
         status=1
     fi
