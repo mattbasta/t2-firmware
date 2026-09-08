@@ -239,13 +239,24 @@ Two suites, both required on x86 *and* QEMU-mipsel:
   including `require('string_decoder/')` whose trailing slash deliberately
   bypasses the core module.
 
-**The wrinkle:** Phase 0 found that `tjs test` cannot run under qemu-user without
-binfmt_misc — the runner spawns a child per test file and `execve` of a MIPS binary
-fails with `ENOEXEC`. Phase 0 worked around it by running each file with `tjs run`.
-Phase 1's CI needs a decision up front: either a runner with
-`sudo apt-get install qemu-user-static` (binfmt registered, spawning works), or a
-one-file-per-invocation harness that never spawns. The former is better —
-`child_process` is Phase 2's gate and will need real spawning anyway.
+**The wrinkle, now closed.** Phase 0 found that a MIPS binary cannot `execve`
+another MIPS binary under qemu-user: the syscall reaches the *host* kernel, which
+reads `e_machine = EM_MIPS` and answers `ENOEXEC`. That is why `tjs test`, which
+spawns a child per test file, could not run, and why Phase 0 ran each file
+separately. Phase 0 recorded that installing `qemu-user-static` *should* fix it
+and left it there.
+
+Measured 2026-09-08 on the build machine. The package registers a `qemu-mipsel`
+handler (`flags: POF` — so it survives mount namespaces), after which:
+
+- `./build/mipsel/node -p ...` runs with no `qemu-mipsel-static` prefix at all;
+- a mipsel `node` spawns another mipsel `node` through `tjs.spawn`, pipes its
+  stdout, reads back `42`, and collects exit status 0;
+- all six suites pass through binfmt routing as well as through the explicit
+  prefix.
+
+So `child_process` is testable under emulation in Phase 2. It is still not the
+shipping path — see §7 decision 4 for why the board stays the authority.
 
 ## 5a. Known deviations so far
 
