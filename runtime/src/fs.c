@@ -74,11 +74,19 @@ static const char *t2_fs_syscall(uv_fs_type type) {
         case UV_FS_FSYNC: return "fsync";
         case UV_FS_FDATASYNC: return "fdatasync";
         case UV_FS_UTIME: return "utime";
+        case UV_FS_FUTIME: return "futime";
+        case UV_FS_LUTIME: return "lutime";
+        case UV_FS_CHOWN: return "chown";
+        case UV_FS_FCHOWN: return "fchown";
+        case UV_FS_LCHOWN: return "lchown";
+        case UV_FS_FCHMOD: return "fchmod";
+        case UV_FS_STATFS: return "statfs";
         default: return "fs";
     }
 }
 
 static JSValue t2_stat_object(JSContext *ctx, const uv_stat_t *st);
+static JSValue t2_statfs_object(JSContext *ctx, const void *statfs);
 static JSValue t2_dirent_array(JSContext *ctx, uv_fs_t *req, int with_types);
 
 static void t2_fs_async_cb(uv_fs_t *req) {
@@ -120,6 +128,10 @@ static void t2_fs_async_cb(uv_fs_t *req) {
 
             case UV_FS_READLINK:
                 args[1] = JS_NewString(ctx, req->ptr);
+                break;
+
+            case UV_FS_STATFS:
+                args[1] = t2_statfs_object(ctx, req->ptr);
                 break;
 
             case UV_FS_MKDTEMP:
@@ -928,6 +940,207 @@ static JSValue t2_fs_utime(JSContext *ctx, JSValue this_val, int argc, JSValue *
     return JS_UNDEFINED;
 }
 
+/* --- ownership, modes and times on a descriptor --------------------------- */
+//
+// The family Phase 2 step 1 deliberately deferred: each is the same shape as a
+// binding that already exists, and libuv has all of them. Pulled forward because
+// Node's own fs tests ask for them by name.
+
+static JSValue t2_fs_chown_impl(JSContext *ctx, JSValue this_val, int argc, JSValue *argv, int link) {
+    int32_t uid, gid;
+
+    T2_FS_BEGIN_PATH(0);
+
+    if (JS_ToInt32(ctx, &uid, argv[1]) || JS_ToInt32(ctx, &gid, argv[2])) {
+        JS_FreeCString(ctx, path);
+        return JS_EXCEPTION;
+    }
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[3], JS_UNDEFINED, 0);
+
+    if (fr) {
+        uv_loop_t *loop = t2_fs_loop(ctx);
+        int ar = link ? uv_fs_lchown(loop, &fr->req, path, uid, gid, t2_fs_async_cb)
+                      : uv_fs_chown(loop, &fr->req, path, uid, gid, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, link ? "lchown" : "chown");
+    }
+
+    int r = link ? uv_fs_lchown(NULL, &req, path, uid, gid, NULL) : uv_fs_chown(NULL, &req, path, uid, gid, NULL);
+
+    T2_FS_END_PATH(r, link ? "lchown" : "chown");
+
+    uv_fs_req_cleanup(&req);
+    JS_FreeCString(ctx, path);
+
+    return JS_UNDEFINED;
+}
+
+static JSValue t2_fs_chown(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    return t2_fs_chown_impl(ctx, this_val, argc, argv, 0);
+}
+
+static JSValue t2_fs_lchown(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    return t2_fs_chown_impl(ctx, this_val, argc, argv, 1);
+}
+
+static JSValue t2_fs_fchown(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    int32_t fd, uid, gid;
+
+    if (JS_ToInt32(ctx, &fd, argv[0]) || JS_ToInt32(ctx, &uid, argv[1]) || JS_ToInt32(ctx, &gid, argv[2])) {
+        return JS_EXCEPTION;
+    }
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[3], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_fchown(t2_fs_loop(ctx), &fr->req, fd, uid, gid, t2_fs_async_cb);
+
+        return t2_fs_async_end(ctx, fr, ar, "fchown");
+    }
+
+    uv_fs_t req;
+    int r = uv_fs_fchown(NULL, &req, fd, uid, gid, NULL);
+
+    uv_fs_req_cleanup(&req);
+
+    if (r < 0) {
+        return t2_throw_uv(ctx, r, "fchown", NULL);
+    }
+
+    return JS_UNDEFINED;
+}
+
+static JSValue t2_fs_fchmod(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    int32_t fd, mode;
+
+    if (JS_ToInt32(ctx, &fd, argv[0]) || JS_ToInt32(ctx, &mode, argv[1])) {
+        return JS_EXCEPTION;
+    }
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[2], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_fchmod(t2_fs_loop(ctx), &fr->req, fd, mode, t2_fs_async_cb);
+
+        return t2_fs_async_end(ctx, fr, ar, "fchmod");
+    }
+
+    uv_fs_t req;
+    int r = uv_fs_fchmod(NULL, &req, fd, mode, NULL);
+
+    uv_fs_req_cleanup(&req);
+
+    if (r < 0) {
+        return t2_throw_uv(ctx, r, "fchmod", NULL);
+    }
+
+    return JS_UNDEFINED;
+}
+
+static JSValue t2_fs_futime(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    int32_t fd;
+    double atime, mtime;
+
+    if (JS_ToInt32(ctx, &fd, argv[0]) || JS_ToFloat64(ctx, &atime, argv[1]) ||
+        JS_ToFloat64(ctx, &mtime, argv[2])) {
+        return JS_EXCEPTION;
+    }
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[3], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_futime(t2_fs_loop(ctx), &fr->req, fd, atime, mtime, t2_fs_async_cb);
+
+        return t2_fs_async_end(ctx, fr, ar, "futime");
+    }
+
+    uv_fs_t req;
+    int r = uv_fs_futime(NULL, &req, fd, atime, mtime, NULL);
+
+    uv_fs_req_cleanup(&req);
+
+    if (r < 0) {
+        return t2_throw_uv(ctx, r, "futime", NULL);
+    }
+
+    return JS_UNDEFINED;
+}
+
+static JSValue t2_fs_lutime(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    double atime, mtime;
+
+    T2_FS_BEGIN_PATH(0);
+
+    if (JS_ToFloat64(ctx, &atime, argv[1]) || JS_ToFloat64(ctx, &mtime, argv[2])) {
+        JS_FreeCString(ctx, path);
+        return JS_EXCEPTION;
+    }
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[3], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_lutime(t2_fs_loop(ctx), &fr->req, path, atime, mtime, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "lutime");
+    }
+
+    int r = uv_fs_lutime(NULL, &req, path, atime, mtime, NULL);
+
+    T2_FS_END_PATH(r, "lutime");
+
+    uv_fs_req_cleanup(&req);
+    JS_FreeCString(ctx, path);
+
+    return JS_UNDEFINED;
+}
+
+/* --- statfs ---------------------------------------------------------------- */
+
+static JSValue t2_statfs_object(JSContext *ctx, const void *raw) {
+    const uv_statfs_t *st = raw;
+    JSValue obj = JS_NewObject(ctx);
+
+    JS_SetPropertyStr(ctx, obj, "type", JS_NewFloat64(ctx, (double) st->f_type));
+    JS_SetPropertyStr(ctx, obj, "bsize", JS_NewFloat64(ctx, (double) st->f_bsize));
+    JS_SetPropertyStr(ctx, obj, "blocks", JS_NewFloat64(ctx, (double) st->f_blocks));
+    JS_SetPropertyStr(ctx, obj, "bfree", JS_NewFloat64(ctx, (double) st->f_bfree));
+    JS_SetPropertyStr(ctx, obj, "bavail", JS_NewFloat64(ctx, (double) st->f_bavail));
+    JS_SetPropertyStr(ctx, obj, "files", JS_NewFloat64(ctx, (double) st->f_files));
+    JS_SetPropertyStr(ctx, obj, "ffree", JS_NewFloat64(ctx, (double) st->f_ffree));
+
+    return obj;
+}
+
+static JSValue t2_fs_statfs(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    T2_FS_BEGIN_PATH(0);
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[1], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_statfs(t2_fs_loop(ctx), &fr->req, path, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "statfs");
+    }
+
+    int r = uv_fs_statfs(NULL, &req, path, NULL);
+
+    T2_FS_END_PATH(r, "statfs");
+
+    JSValue ret = t2_statfs_object(ctx, req.ptr);
+
+    uv_fs_req_cleanup(&req);
+    JS_FreeCString(ctx, path);
+
+    return ret;
+}
+
 /* --- constants ------------------------------------------------------------ */
 
 /* fs.constants. libuv's UV_FS_O_* are the portable spellings of the open flags;
@@ -1014,6 +1227,13 @@ void t2_register_fs(JSContext *ctx, JSValue natives) {
     T2_FN("ftruncate", t2_fs_ftruncate, 3);
     T2_FN("fsync", t2_fs_fsync, 3);
     T2_FN("utime", t2_fs_utime, 4);
+    T2_FN("chown", t2_fs_chown, 4);
+    T2_FN("lchown", t2_fs_lchown, 4);
+    T2_FN("fchown", t2_fs_fchown, 4);
+    T2_FN("fchmod", t2_fs_fchmod, 3);
+    T2_FN("futime", t2_fs_futime, 4);
+    T2_FN("lutime", t2_fs_lutime, 4);
+    T2_FN("statfs", t2_fs_statfs, 2);
 
 #undef T2_FN
 

@@ -15,6 +15,13 @@ let native = null;
 // name -> exports, for core modules that exist
 const CORE = new Map();
 
+// Node's core *subpath* modules: 'fs/promises', 'stream/promises',
+// 'path/posix'. Most are a property of a module we already have, so an alias
+// is { module, property }; the rest name a module of their own, whose file
+// cannot be called timers/promises.js because build-js.sh derives a C
+// identifier from the filename.
+const CORE_ALIASES = new Map();
+
 // name -> message, for core modules that are coming but are not here yet. Worth
 // separating from "not found": "fs is not implemented yet" is a very different
 // thing for a user to read than "cannot find module fs".
@@ -43,15 +50,27 @@ export function defineLazyCore(name) {
     LAZY.add(name);
 }
 
+export function defineCoreAlias(name, target) {
+    CORE_ALIASES.set(name, target);
+}
+
 export function coreModuleNames() {
-    return [...CORE.keys(), ...LAZY].sort();
+    return [...CORE.keys(), ...LAZY, ...CORE_ALIASES.keys()].sort();
 }
 
 function isCore(name) {
-    return CORE.has(name) || LAZY.has(name);
+    return CORE.has(name) || LAZY.has(name) || CORE_ALIASES.has(name);
 }
 
 function loadCore(name) {
+    const alias = CORE_ALIASES.get(name);
+
+    if (alias) {
+        const target = loadCore(alias.module);
+
+        return alias.property === undefined ? target : target[alias.property];
+    }
+
     if (CORE.has(name)) {
         return CORE.get(name);
     }

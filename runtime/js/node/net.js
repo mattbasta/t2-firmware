@@ -80,6 +80,19 @@ function toBuffer(chunk, encoding) {
     return typeof chunk === 'string' ? Buffer.from(chunk, encoding || 'utf8') : chunk;
 }
 
+
+// Node's stream and socket constructors work with or without `new`, because
+// they predate classes and a decade of code calls them bare. An ES class throws
+// when called. A proxy that forwards a plain call to construct keeps the class
+// — and instanceof, and subclassing — while accepting both spellings.
+function callableWithoutNew(Cls) {
+    return new Proxy(Cls, {
+        apply(target, thisArg, args) {
+            return Reflect.construct(target, args);
+        }
+    });
+}
+
 // --- Socket ------------------------------------------------------------------
 
 class Socket extends Duplex {
@@ -668,10 +681,13 @@ function createServer(options, connectionListener) {
     return new Server(options, connectionListener);
 }
 
+const CallableSocket = callableWithoutNew(Socket);
+const CallableServer = callableWithoutNew(Server);
+
 module.exports = {
-    Socket,
-    Stream: Socket,
-    Server,
+    Socket: CallableSocket,
+    Stream: CallableSocket,
+    Server: CallableServer,
     createConnection,
     connect: createConnection,
     createServer,

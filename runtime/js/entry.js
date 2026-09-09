@@ -9,7 +9,7 @@
 import nodePath from 'tjs:path';
 
 import { Buffer, SlowBuffer, kMaxLength } from './buffer.js';
-import { Module, coreModuleNames, defineCore, defineLazyCore, definePending, makeRequire, runMain, setNative } from './module.js';
+import { Module, coreModuleNames, defineCore, defineCoreAlias, defineLazyCore, definePending, makeRequire, runMain, setNative } from './module.js';
 import { createProcess, drainTicks, handleUncaught } from './process.js';
 
 const native = globalThis.__t2native;
@@ -39,6 +39,7 @@ function registerCoreModules() {
     defineCore('path', nodePath);
     defineCore('buffer', { Buffer, SlowBuffer, kMaxLength, constants: { MAX_LENGTH: kMaxLength } });
     defineCore('module', Module);
+    defineCore('process', process);
     defineCore('console', console);
     defineCore('timers', {
         setTimeout,
@@ -54,6 +55,17 @@ function registerCoreModules() {
     for (const name of native.coreModuleNames()) {
         defineLazyCore(name);
     }
+
+    // Node's core subpath modules. These are real entry points that era and
+    // modern code both import directly, and resolving them through the parent
+    // keeps them lazy: require('fs/promises') costs what require('fs') costs.
+    defineCoreAlias('fs/promises', { module: 'fs', property: 'promises' });
+    defineCoreAlias('stream/promises', { module: 'stream', property: 'promises' });
+    defineCoreAlias('path/posix', { module: 'path', property: 'posix' });
+    defineCoreAlias('path/win32', { module: 'path', property: 'win32' });
+    defineCoreAlias('assert/strict', { module: 'assert', property: 'strict' });
+    defineCoreAlias('util/types', { module: 'util', property: 'types' });
+    defineCoreAlias('timers/promises', { module: 'timers_promises' });
 
     Module.builtinModules = coreModuleNames();
 

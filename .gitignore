@@ -8,3 +8,7 @@ coverage
 
 # The loader's fixtures need real node_modules trees: resolution keys on the name.
 !runtime/test/loader/**/node_modules/
+
+# Node's own test suite, fetched by runtime/test/node-suite/fetch.sh. Thousands
+# of third-party files, pinned rather than vendored.
+runtime/test/node-suite/node/

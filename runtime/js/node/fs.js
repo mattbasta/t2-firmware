@@ -1279,6 +1279,19 @@ function appendFile(path, data, options, callback) {
 // sysfs node should never deserialize the stream bundle. Requiring it at the top
 // of this file would make every require('fs') do exactly that.
 
+
+// Node's stream and socket constructors work with or without `new`, because
+// they predate classes and a decade of code calls them bare. An ES class throws
+// when called. A proxy that forwards a plain call to construct keeps the class
+// — and instanceof, and subclassing — while accepting both spellings.
+function callableWithoutNew(Cls) {
+    return new Proxy(Cls, {
+        apply(target, thisArg, args) {
+            return Reflect.construct(target, args);
+        }
+    });
+}
+
 let streamClasses;
 
 function getStreamClasses() {
@@ -1478,7 +1491,7 @@ function getStreamClasses() {
         }
     }
 
-    streamClasses = { ReadStream, WriteStream };
+    streamClasses = { ReadStream: callableWithoutNew(ReadStream), WriteStream: callableWithoutNew(WriteStream) };
 
     return streamClasses;
 }
@@ -1900,6 +1913,77 @@ class FileHandle {
     }
 }
 
+// --- ownership, modes and times ----------------------------------------------
+//
+// Deferred out of step 1 as "mechanical", then pulled forward when Node's own
+// fs tests turned out to ask for all of them by name.
+
+function chownSync(path, uid, gid) {
+    binding.chown(getPath(path), uid, gid);
+}
+
+function chown(path, uid, gid, callback) {
+    binding.chown(getPath(path), uid, gid, guard(getCallback(callback)));
+}
+
+function lchownSync(path, uid, gid) {
+    binding.lchown(getPath(path), uid, gid);
+}
+
+function lchown(path, uid, gid, callback) {
+    binding.lchown(getPath(path), uid, gid, guard(getCallback(callback)));
+}
+
+function fchownSync(fd, uid, gid) {
+    binding.fchown(getFd(fd), uid, gid);
+}
+
+function fchown(fd, uid, gid, callback) {
+    binding.fchown(getFd(fd), uid, gid, guard(getCallback(callback)));
+}
+
+function fchmodSync(fd, mode) {
+    binding.fchmod(getFd(fd), mode);
+}
+
+function fchmod(fd, mode, callback) {
+    binding.fchmod(getFd(fd), mode, guard(getCallback(callback)));
+}
+
+function futimesSync(fd, atime, mtime) {
+    binding.futime(getFd(fd), toUnixTime(atime), toUnixTime(mtime));
+}
+
+function futimes(fd, atime, mtime, callback) {
+    binding.futime(getFd(fd), toUnixTime(atime), toUnixTime(mtime), guard(getCallback(callback)));
+}
+
+function lutimesSync(path, atime, mtime) {
+    binding.lutime(getPath(path), toUnixTime(atime), toUnixTime(mtime));
+}
+
+function lutimes(path, atime, mtime, callback) {
+    binding.lutime(getPath(path), toUnixTime(atime), toUnixTime(mtime), guard(getCallback(callback)));
+}
+
+class StatFs {
+    constructor(raw) {
+        Object.assign(this, raw);
+    }
+}
+
+function statfsSync(path, options) {
+    getOptions(options, {});
+
+    return new StatFs(binding.statfs(getPath(path)));
+}
+
+function statfs(path, options, callback) {
+    const [, cb] = optionsAndCallback(options, callback, {});
+
+    binding.statfs(getPath(path), guard((err, raw) => (err ? cb(err) : cb(null, new StatFs(raw)))));
+}
+
 // --- omissions ---------------------------------------------------------------
 //
 // Present as stubs so a caller is told what it hit, rather than absent so it
@@ -1907,6 +1991,12 @@ class FileHandle {
 
 const WATCH_REASON = 'nothing on this device watches files, and FSWatcher semantics are ' +
     'platform-specific enough that a half-built one would be worse than none';
+
+const LCHMOD_REASON = 'changing the mode of a symlink is a BSD extension; Linux has no lchmod(2), ' +
+    'and Node throws here too on this platform';
+
+const lchmod = __native.omitted('fs.lchmod', LCHMOD_REASON);
+const lchmodSync = __native.omitted('fs.lchmodSync', LCHMOD_REASON);
 
 const watch = __native.omitted('fs.watch', WATCH_REASON);
 const watchFile = __native.omitted('fs.watchFile', WATCH_REASON);
@@ -1950,6 +2040,11 @@ const promises = {
 };
 
 promises.opendir = promisify(opendir);
+promises.chown = promisify(chown);
+promises.lchown = promisify(lchown);
+promises.lutimes = promisify(lutimes);
+promises.statfs = promisify(statfs);
+promises.lchmod = __native.omitted('fs.promises.lchmod', LCHMOD_REASON);
 promises.cp = promisify(cp);
 promises.watch = __native.omitted('fs.promises.watch', WATCH_REASON);
 
@@ -2108,8 +2203,25 @@ module.exports = {
 
     createReadStream,
     createWriteStream,
+    chown,
+    chownSync,
     cp,
     cpSync,
+    fchmod,
+    fchmodSync,
+    fchown,
+    fchownSync,
+    futimes,
+    futimesSync,
+    lchmod,
+    lchmodSync,
+    lchown,
+    lchownSync,
+    lutimes,
+    lutimesSync,
+    statfs,
+    statfsSync,
+    StatFs,
     opendir,
     opendirSync,
     readv,
