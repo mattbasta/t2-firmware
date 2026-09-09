@@ -80,6 +80,51 @@ No decision has been made against these; they are queued.
 - **`fs.openAsBlob`**, **`Utf8Stream`**, **`mkdtempDisposableSync`** — modern
   Node surface with no caller in sight.
 
+## How far behind the stream port is
+
+`node:stream` is a port of `readable-stream` v3.6.2, which is not an independent
+reimplementation: it is Node's own `lib/internal/streams/` extracted and
+republished by the Node streams working group, which is why our streams and
+Node's agree exactly on the mechanics that have not changed. Measured against
+Node 26 on 2026-09-09, a pushed EOF with no consumer behaves identically on
+both — no `'end'` until something reads, `'end'` after `read(0)` or `resume()`,
+no early end while data is buffered.
+
+v3.6.2 tracks roughly Node 10–12, though, so the gap is real. What it amounts to:
+
+**One behavioral difference, and it is the one to remember.** `autoDestroy`
+defaults to **`false`** here and `true` in Node 26, which changes when a stream
+is destroyed and when `'close'` fires. Our own modules are unaffected —
+`net.Socket` and the `fs` streams both pass `autoDestroy: true` explicitly — but
+a stream a *user* constructs will behave differently from the same code on Node.
+
+**Surface added to Node after v3.6.2**, none of which era code can be reaching
+for, listed so nobody has to diff it again:
+
+- Iterator helpers on `Readable.prototype`: `map`, `filter`, `forEach`,
+  `toArray`, `some`, `every`, `find`, `reduce`, `drop`, `take`, `flatMap`,
+  `iterator`, `compose`.
+- State inspection: `readableEnded`, `readableAborted`, `readableDidRead`,
+  `readableEncoding`, `readableObjectMode`, `closed`, `errored`.
+- Module-level helpers: `compose`, `duplexPair`, `addAbortSignal`, `destroy`,
+  `isDisturbed`, `isErrored`, `isReadable`, `isWritable`, `isDestroyed`,
+  `getDefaultHighWaterMark`, `setDefaultHighWaterMark`.
+- Web-stream interop: `Readable.fromWeb`, `Readable.toWeb`.
+
+Present and working: `pipeline`, `finished`, `stream.promises`, `Readable.from`,
+and `Symbol.asyncIterator`. Of the gaps, `autoDestroy` and the state getters are
+the only ones a moderately recent package is likely to touch; the rest are
+Node 16-and-later conveniences.
+
+**The trap this replaced.** A `net` bug was first explained as our older streams
+diverging from Node's, which was wrong and pointed at the wrong layer. The
+streams agreed; the difference was between our `net.js` and Node's. Node's
+*module* implementations do work on top of streams that is invisible from the
+stream API — `net.Socket` calls `read(0)` on connect and after EOF, and nothing
+about the stream contract says so. Expect more of that in `http`, which leans on
+streams far harder than `net` does, and measure Node rather than reasoning from
+the stream docs.
+
 ## A note on build variants
 
 The idea of a **slim build** — one that drops optional weight, with the full
