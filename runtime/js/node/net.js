@@ -325,10 +325,10 @@ class Socket extends Duplex {
 
         this._resetTimeout();
 
-        let inline;
-
+        // The handle calls back exactly once whether or not the write went out
+        // inline, so there is only one completion path to get right here.
         try {
-            inline = this._handle.write(buffers, guard(err => {
+            this._handle.write(buffers, guard(err => {
                 if (err) {
                     callback(err);
                 } else {
@@ -338,18 +338,6 @@ class Socket extends Duplex {
             }));
         } catch (err) {
             callback(err);
-
-            return;
-        }
-
-        // write() answers true when uv_try_write took the whole batch without
-        // touching the loop — the common case for a small SPI command — and in
-        // that case no completion callback was registered, so this is the
-        // completion. Calling back synchronously is safe: Writable's onwrite
-        // defers through nextTick when a write finishes inline.
-        if (inline) {
-            this.bytesWritten += total;
-            callback();
         }
     }
 

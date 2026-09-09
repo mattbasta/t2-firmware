@@ -376,11 +376,18 @@ static void t2_write_cb(uv_write_t *req, int status) {
     js_free(ctx, wr);
 }
 
-/* write(buffers, callback) -> true when the whole thing went out inline.
+/* write(buffers, callback)
  *
- * The inline attempt matters: Node's Writable treats a synchronous completion
- * as "no backpressure", and a corked SPI batch that always took a trip through
- * the loop would cost a turn per command. */
+ * The callback is invoked exactly once, always — synchronously when uv_try_write
+ * took the whole batch without touching the loop, and from the loop otherwise.
+ * Callers do not have to know which happened.
+ *
+ * An earlier version returned true for the inline case and left the caller to
+ * complete the write itself. That is a real distinction — a corked SPI batch
+ * that always took a trip through the loop would cost a turn per command — but
+ * it made the completion the caller's job in one branch and ours in the other,
+ * which is the kind of contract you have to remember rather than read. The
+ * optimization is still here; only the obligation moved. */
 static JSValue t2_handle_write(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
     t2_handle_t *s = t2_handle_of(ctx, this_val);
 
@@ -404,7 +411,11 @@ static JSValue t2_handle_write(JSContext *ctx, JSValue this_val, int argc, JSVal
     JS_FreeValue(ctx, length);
 
     if (count == 0) {
-        return JS_TRUE;
+        JSValue none = JS_NULL;
+
+        t2_net_call(ctx, argv[1], 1, &none);
+
+        return JS_UNDEFINED;
     }
 
     uv_buf_t *bufs = js_malloc(ctx, sizeof(*bufs) * count);
@@ -440,7 +451,13 @@ static JSValue t2_handle_write(JSContext *ctx, JSValue this_val, int argc, JSVal
     if (r >= 0 && (size_t) r == total) {
         js_free(ctx, bufs);
 
-        return JS_TRUE;
+        /* Synchronous completion. Writable's onwrite notices it finished inline
+         * and defers the rest through nextTick, so this cannot re-enter. */
+        JSValue none = JS_NULL;
+
+        t2_net_call(ctx, argv[1], 1, &none);
+
+        return JS_UNDEFINED;
     }
 
     /* Partially written: advance past what went out and queue the rest. */
@@ -480,7 +497,7 @@ static JSValue t2_handle_write(JSContext *ctx, JSValue this_val, int argc, JSVal
         return t2_throw_uv(ctx, r, "write", NULL);
     }
 
-    return JS_FALSE;
+    return JS_UNDEFINED;
 }
 
 static void t2_shutdown_cb(uv_shutdown_t *req, int status) {

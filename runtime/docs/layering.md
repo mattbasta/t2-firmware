@@ -60,6 +60,31 @@ been written in JS it would have been correct on every development machine and
 silently wrong on the board. It lives in `constants.c` and is read from the
 target's headers at compile time.
 
+## The obligation always sits on the same side
+
+A contract you have to remember is a bug waiting to be written, so where this
+runtime owns both sides of an interface, it does not have one.
+
+`handle.write()` used to return `true` when `uv_try_write` had taken the whole
+batch inline, and in that case it had registered no completion callback — so
+completing the write was the *caller's* job in one branch and the handle's in
+the other. The optimization was worth keeping; the split obligation was not. It
+now calls back exactly once either way, synchronously when the write finished
+inline, and returns nothing.
+
+The general form: **a callback this layer accepts is invoked exactly once**,
+whether the work finished immediately or went to the loop, and a caller never
+has to inspect a return value to find out whose turn it is. `connect`, `write`,
+`shutdown` and `close` all behave this way. `accept()` is the deliberate
+exception and reads as one — it returns a handle or `null` and takes no
+callback, because there is nothing asynchronous about it.
+
+This is worth stating because we cannot do it everywhere. Node's own stream
+interface has exactly the trap described above — `push(null)` records EOF but
+somebody must `read()` before `'end'` is announced — and compatibility means
+living with it rather than improving it. The rule applies to interfaces this
+project defines, not to the ones it reimplements.
+
 ## The failure mode to watch
 
 The bug that prompted this document was first explained as our older stream port
