@@ -20,7 +20,13 @@ eq(typeof process.arch === 'string' && process.arch !== 'unknown', true, `arch (
 eq(typeof process.pid, 'number', 'pid');
 eq(typeof process.env, 'object', 'env');
 eq(process.cwd().startsWith('/'), true, 'cwd is absolute');
-eq(typeof process.versions.node, 'string', 'versions.node');
+// Our own semver line, one minor above 8.11.3 — the highest Node the
+// openwrt-tessel project ever shipped for this board. Decided in Phase 2; the
+// reasoning is at the top of runtime/js/process.js. Pinned here because era
+// code feature-detects on it and a drift would be silent.
+eq(process.version, 'v8.12.0', 'version is our own line, above the Node ceiling for this board');
+eq(process.versions.node, '8.12.0', 'versions.node agrees with process.version');
+eq(typeof process.versions.quickjs, 'string', 'versions.quickjs is the real engine version');
 eq(typeof process.versions.quickjs, 'string', 'versions.quickjs');
 eq(globalThis.global === globalThis, true, 'global');
 eq(globalThis.GLOBAL === globalThis, true, 'GLOBAL alias restored');

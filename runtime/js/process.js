@@ -7,13 +7,21 @@
 const VERSIONS = tjs.engine.versions;
 
 // process.version is what era code feature-detects on, so it is not free to be
-// arbitrary. Today it tracks txiki's version, which lands on v26 by coincidence
-// rather than by decision — and a program reading that will assume a Node 26
-// surface, including things this runtime does not have yet. What it should
-// report is the Node compatibility level we actually implement, which is not
-// settled until Phase 2 and 3 fill in fs, net and http. Recorded as an open
-// question in runtime/docs/phase1-plan.md §7 rather than silently guessed at.
-const NODE_COMPAT_VERSION = `v${VERSIONS.tjs}`;
+// arbitrary. Decided in Phase 2: this runtime starts its own semver line one
+// minor above 8.11.3, the highest Node the openwrt-tessel project ever shipped
+// for this board. So 8.12.0 is our 0.1.
+//
+// The reasoning, in three parts. Reporting a modern Node is worse than useless
+// — we are not Node, and claiming v26 walks era code into paths this runtime
+// cannot serve. Reporting anything *below* 8.11.3 risks being mistaken for a
+// genuinely older Node, back when 0.x and io.js were live numbers and library
+// version checks were written accordingly. And every number in between would be
+// arbitrary. Sitting one minor above the ceiling is the only position that is
+// none of those things.
+//
+// This is our own line from here: the next release is 8.13.0, not whatever Node
+// does next.
+const NODE_COMPAT_VERSION = 'v8.12.0';
 
 // Some tjs surfaces are plain properties, others accessors or functions;
 // resolve either shape rather than guessing.
@@ -229,7 +237,7 @@ export function createProcess(native, argv) {
         title: 'node',
         exitCode: undefined,
         version: NODE_COMPAT_VERSION,
-        versions: Object.freeze({ ...VERSIONS, node: VERSIONS.tjs }),
+        versions: Object.freeze({ ...VERSIONS, node: NODE_COMPAT_VERSION.slice(1) }),
         release: Object.freeze({ name: 'node' }),
 
         cwd: () => resolve(tjs.cwd),

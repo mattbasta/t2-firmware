@@ -514,6 +514,106 @@ async function asyncTests() {
 
     eq(fs.readFileSync(path.join(adir, 'piped.txt'), 'utf8'), 'hello world', 'read stream pipes into write stream');
 
+    // --- vectored I/O ---------------------------------------------------------
+    const vfd = await call(fs.open, path.join(adir, 'vec.txt'), 'w');
+
+    eq((await call(fs.writev, vfd, [Buffer.from('abc'), Buffer.from('de')]))[0], 5, 'writev byte count');
+    await call(fs.close, vfd);
+    eq(fs.readFileSync(path.join(adir, 'vec.txt'), 'utf8'), 'abcde', 'writev contents in order');
+
+    const rvfd = await call(fs.open, path.join(adir, 'vec.txt'), 'r');
+    const vbufs = [Buffer.alloc(3), Buffer.alloc(2)];
+
+    eq((await call(fs.readv, rvfd, vbufs))[0], 5, 'readv byte count');
+    eq(vbufs[0].toString() + vbufs[1].toString(), 'abcde', 'readv fills the buffers in order');
+    await call(fs.close, rvfd);
+
+    const svfd = fs.openSync(path.join(adir, 'vecs.txt'), 'w');
+
+    eq(fs.writevSync(svfd, [Buffer.from('xy'), Buffer.from('z')]), 3, 'writevSync byte count');
+    fs.closeSync(svfd);
+    eq(fs.readFileSync(path.join(adir, 'vecs.txt'), 'utf8'), 'xyz', 'writevSync contents');
+
+    // --- opendir / Dir --------------------------------------------------------
+    const dirHandle = await call(fs.opendir, path.join(adir, 'sub'));
+
+    eq(dirHandle.path, path.join(adir, 'sub'), 'Dir.path');
+
+    const firstEntry = await dirHandle.read();
+
+    eq(firstEntry.name, 'b.txt', 'Dir.read yields a Dirent');
+    eq(firstEntry.isFile(), true, 'Dir entries are Dirents');
+    eq(await dirHandle.read(), null, 'Dir.read returns null at the end');
+    await dirHandle.close();
+
+    const iterated = [];
+
+    for await (const entry of await call(fs.opendir, path.join(adir, 'sub'))) {
+        iterated.push(entry.name);
+    }
+
+    eq(iterated.join(), 'b.txt', 'Dir is async-iterable');
+
+    const syncDir = fs.opendirSync(path.join(adir, 'sub'));
+
+    eq(syncDir.readSync().name, 'b.txt', 'opendirSync + readSync');
+    eq(syncDir.readSync(), null, 'readSync returns null at the end');
+    syncDir.closeSync();
+
+    // --- cp -------------------------------------------------------------------
+    fs.mkdirSync(path.join(adir, 'cpsrc', 'nested'), { recursive: true });
+    fs.writeFileSync(path.join(adir, 'cpsrc', 'one.txt'), 'one');
+    fs.writeFileSync(path.join(adir, 'cpsrc', 'nested', 'two.txt'), 'two');
+
+    // the single-file case, which is what most callers actually use
+    await call(fs.cp, path.join(adir, 'cpsrc', 'one.txt'), path.join(adir, 'one-copy.txt'));
+    eq(fs.readFileSync(path.join(adir, 'one-copy.txt'), 'utf8'), 'one', 'cp copies a single file');
+
+    fs.cpSync(path.join(adir, 'cpsrc', 'one.txt'), path.join(adir, 'one-copy2.txt'));
+    eq(fs.readFileSync(path.join(adir, 'one-copy2.txt'), 'utf8'), 'one', 'cpSync copies a single file');
+
+    await rejects(call(fs.cp, path.join(adir, 'cpsrc'), path.join(adir, 'cpdest')), 'ERR_FS_EISDIR',
+        'cp on a directory without recursive');
+
+    await call(fs.cp, path.join(adir, 'cpsrc'), path.join(adir, 'cpdest'), { recursive: true });
+    eq(fs.readFileSync(path.join(adir, 'cpdest', 'one.txt'), 'utf8'), 'one', 'recursive cp copies files');
+    eq(fs.readFileSync(path.join(adir, 'cpdest', 'nested', 'two.txt'), 'utf8'), 'two',
+        'recursive cp descends');
+
+    fs.cpSync(path.join(adir, 'cpsrc'), path.join(adir, 'cpdest2'), { recursive: true });
+    eq(fs.readFileSync(path.join(adir, 'cpdest2', 'nested', 'two.txt'), 'utf8'), 'two', 'recursive cpSync');
+
+    // --- FileHandle -----------------------------------------------------------
+    const handle = await fs.promises.open(path.join(adir, 'fh.txt'), 'w+');
+
+    eq(typeof handle.fd, 'number', 'FileHandle carries a descriptor');
+
+    const written = await handle.write('through a handle');
+
+    eq(written.bytesWritten, 16, 'FileHandle.write reports bytesWritten');
+    eq((await handle.stat()).size, 16, 'FileHandle.stat');
+
+    const hbuf = Buffer.alloc(7);
+    const hread = await handle.read(hbuf, 0, 7, 0);
+
+    eq(hread.bytesRead, 7, 'FileHandle.read reports bytesRead');
+    eq(hbuf.toString(), 'through', 'FileHandle.read fills the buffer');
+    // readFile on a handle reads from the *current* position, which the write
+    // above left at EOF — so this is empty, and that is Node's behavior too.
+    eq(await handle.readFile('utf8'), '', 'FileHandle.readFile reads from the current position');
+
+    await handle.truncate(7);
+    eq((await handle.stat()).size, 7, 'FileHandle.truncate');
+    await handle.sync();
+    await handle.close();
+
+    eq(fs.readFileSync(path.join(adir, 'fh.txt'), 'utf8'), 'through', 'FileHandle wrote to the file');
+
+    const rehandle = await fs.promises.open(path.join(adir, 'fh.txt'), 'r');
+
+    eq(await rehandle.readFile('utf8'), 'through', 'a fresh FileHandle reads from the start');
+    await rehandle.close();
+
     // --- recursive removal ---------------------------------------------------
     await rejects(call(fs.rm, path.join(adir, 'p')), 'ERR_FS_EISDIR', 'async rm on a directory');
     await call(fs.rm, path.join(adir, 'p'), { recursive: true });

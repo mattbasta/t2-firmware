@@ -83,6 +83,34 @@ function registerCoreModules() {
     }
 }
 
+// Omissions are stubs, not absences. A library that reaches for something this
+// runtime does not implement should be told what it hit and where it is written
+// down — "fs.watch is not a function" sends the reader looking for a typo.
+//
+// The throw is the signal; the one-time log exists because code that swallows
+// the error would otherwise leave no trace at all. Once per name, not per call,
+// so a retry loop cannot turn it into a flood.
+const reportedOmissions = new Set();
+
+function omitted(subject, reason) {
+    return function () {
+        const err = new Error(
+            `${subject} is not implemented by this runtime` +
+            (reason ? `: ${reason}` : '') +
+            '. See runtime/docs/omissions.md.'
+        );
+
+        err.code = 'ERR_NOT_IMPLEMENTED';
+
+        if (!reportedOmissions.has(subject)) {
+            reportedOmissions.add(subject);
+            console.error(err.stack);
+        }
+
+        throw err;
+    };
+}
+
 function installGlobals() {
     Object.defineProperty(globalThis, 'Buffer', {
         value: Buffer,
@@ -178,6 +206,7 @@ function main() {
         fs: native.fs,
         constants: native.constants,
         handleUncaught,
+        omitted,
         cwd: () => process.cwd()
     });
     registerCoreModules();

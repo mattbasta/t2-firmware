@@ -1524,6 +1524,394 @@ function createWriteStream(path, options) {
     return new (getStreamClasses().WriteStream)(path, options);
 }
 
+// --- vectored I/O -----------------------------------------------------------
+//
+// Deliberately simple: libuv's read and write both take an array of buffers and
+// would do these in one syscall, but our binding passes one. Looping is the
+// polyfill that makes code using readv/writev *work*, at the cost of a syscall
+// per buffer. Nothing on this board is I/O-bound in a way that notices, and the
+// alternative is a variadic buffer marshaller in C for an API almost nobody
+// calls directly. Recorded in runtime/docs/omissions.md as a known shortcut.
+
+function readvSync(fd, buffers, position) {
+    getFd(fd);
+
+    let total = 0;
+    let pos = position ?? -1;
+
+    for (const buffer of buffers) {
+        const bytes = toUint8Array(buffer);
+        const n = binding.read(fd, bytes, 0, bytes.byteLength, pos);
+
+        total += n;
+
+        if (pos >= 0) {
+            pos += n;
+        }
+
+        if (n < bytes.byteLength) {
+            break;
+        }
+    }
+
+    return total;
+}
+
+function writevSync(fd, buffers, position) {
+    getFd(fd);
+
+    let total = 0;
+    let pos = position ?? -1;
+
+    for (const buffer of buffers) {
+        const bytes = toUint8Array(buffer);
+        let written = 0;
+
+        while (written < bytes.byteLength) {
+            const n = binding.write(fd, bytes, written, bytes.byteLength - written, pos);
+
+            if (n === 0) {
+                break;
+            }
+
+            written += n;
+
+            if (pos >= 0) {
+                pos += n;
+            }
+        }
+
+        total += written;
+    }
+
+    return total;
+}
+
+function readv(fd, buffers, position, callback) {
+    if (typeof position === 'function') {
+        callback = position;
+        position = null;
+    }
+
+    const cb = getCallback(callback);
+
+    // One buffer at a time on the threadpool, so the loop never blocks even
+    // though it is a loop.
+    let total = 0;
+    let pos = position ?? -1;
+    let index = 0;
+
+    const step = () => {
+        if (index >= buffers.length) {
+            cb(null, total, buffers);
+
+            return;
+        }
+
+        const bytes = toUint8Array(buffers[index]);
+
+        binding.read(fd, bytes, 0, bytes.byteLength, pos, guard((err, n) => {
+            if (err) {
+                cb(err);
+
+                return;
+            }
+
+            total += n;
+
+            if (pos >= 0) {
+                pos += n;
+            }
+
+            if (n < bytes.byteLength) {
+                cb(null, total, buffers);
+
+                return;
+            }
+
+            index++;
+            step();
+        }));
+    };
+
+    getFd(fd);
+    step();
+}
+
+function writev(fd, buffers, position, callback) {
+    if (typeof position === 'function') {
+        callback = position;
+        position = null;
+    }
+
+    const cb = getCallback(callback);
+
+    let total = 0;
+    let pos = position ?? -1;
+    let index = 0;
+
+    const step = () => {
+        if (index >= buffers.length) {
+            cb(null, total, buffers);
+
+            return;
+        }
+
+        const bytes = toUint8Array(buffers[index]);
+
+        binding.write(fd, bytes, 0, bytes.byteLength, pos, guard((err, n) => {
+            if (err) {
+                cb(err);
+
+                return;
+            }
+
+            total += n;
+
+            if (pos >= 0) {
+                pos += n;
+            }
+
+            index++;
+            step();
+        }));
+    };
+
+    getFd(fd);
+    step();
+}
+
+// --- directory handles ------------------------------------------------------
+//
+// Also deliberately simple. Node's Dir streams entries from an open DIR* so a
+// directory with a million files costs one buffer, not a million objects; ours
+// reads the whole listing at open and hands it out one at a time. The API is
+// what matters here — a library that iterates a Dir works — and this board does
+// not have directories where the difference is measurable.
+
+const kDirEntries = Symbol('entries');
+const kDirIndex = Symbol('index');
+const kDirClosed = Symbol('closed');
+
+class Dir {
+    constructor(dirPath, entries) {
+        this.path = dirPath;
+        this[kDirEntries] = entries;
+        this[kDirIndex] = 0;
+        this[kDirClosed] = false;
+    }
+
+    readSync() {
+        if (this[kDirClosed]) {
+            throw nodeError('ERR_DIR_CLOSED', 'Directory handle was closed', 'readdir', this.path);
+        }
+
+        if (this[kDirIndex] >= this[kDirEntries].length) {
+            return null;
+        }
+
+        return this[kDirEntries][this[kDirIndex]++];
+    }
+
+    read(callback) {
+        if (callback === undefined) {
+            return new Promise((resolve, reject) => {
+                try {
+                    const entry = this.readSync();
+
+                    process.nextTick(() => resolve(entry));
+                } catch (err) {
+                    process.nextTick(() => reject(err));
+                }
+            });
+        }
+
+        const cb = getCallback(callback);
+
+        process.nextTick(() => {
+            try {
+                cb(null, this.readSync());
+            } catch (err) {
+                cb(err);
+            }
+        });
+
+        return undefined;
+    }
+
+    closeSync() {
+        this[kDirClosed] = true;
+    }
+
+    close(callback) {
+        this[kDirClosed] = true;
+
+        if (callback === undefined) {
+            return Promise.resolve();
+        }
+
+        const cb = getCallback(callback);
+
+        process.nextTick(() => cb(null));
+
+        return undefined;
+    }
+
+    async *[Symbol.asyncIterator]() {
+        try {
+            for (;;) {
+                const entry = await this.read();
+
+                if (entry === null) {
+                    return;
+                }
+
+                yield entry;
+            }
+        } finally {
+            await this.close();
+        }
+    }
+}
+
+function opendirSync(dirPath, options) {
+    const resolved = getPath(dirPath);
+    const entries = binding.readdir(resolved, true).map(e => new Dirent(e.name, e.type, resolved));
+
+    return new Dir(resolved, entries);
+}
+
+function opendir(dirPath, options, callback) {
+    const [, cb] = optionsAndCallback(options, callback, {});
+    const resolved = getPath(dirPath);
+
+    binding.readdir(resolved, true, guard((err, entries) => {
+        if (err) {
+            cb(err);
+        } else {
+            cb(null, new Dir(resolved, entries.map(e => new Dirent(e.name, e.type, resolved))));
+        }
+    }));
+}
+
+// --- FileHandle -------------------------------------------------------------
+//
+// fs.promises.open resolves to one of these rather than a bare descriptor, so a
+// caller can close it (or let `await using` do it) without reaching back into
+// the callback API.
+
+class FileHandle {
+    constructor(fd) {
+        this.fd = fd;
+    }
+
+    async read(buffer, offset, length, position) {
+        if (buffer === undefined || !ArrayBuffer.isView(buffer)) {
+            // read({ buffer, offset, length, position }) and read() with nothing
+            const opts = buffer ?? {};
+
+            buffer = opts.buffer ?? Buffer.alloc(16384);
+            offset = opts.offset ?? 0;
+            length = opts.length ?? buffer.byteLength - offset;
+            position = opts.position ?? null;
+        }
+
+        const bytesRead = await new Promise((resolve, reject) => {
+            binding.read(
+                this.fd,
+                toUint8Array(buffer),
+                offset ?? 0,
+                length ?? buffer.byteLength - (offset ?? 0),
+                position ?? -1,
+                guard((err, n) => (err ? reject(err) : resolve(n)))
+            );
+        });
+
+        return { bytesRead, buffer };
+    }
+
+    async write(data, offsetOrPosition, lengthOrEncoding, position) {
+        const isString = typeof data === 'string';
+        const bytes = isString ? Buffer.from(data, lengthOrEncoding || 'utf8') : toUint8Array(data);
+        const offset = isString ? 0 : offsetOrPosition ?? 0;
+        const length = isString ? bytes.length : lengthOrEncoding ?? bytes.byteLength - offset;
+        const pos = isString ? offsetOrPosition ?? -1 : position ?? -1;
+
+        const bytesWritten = await new Promise((resolve, reject) => {
+            binding.write(this.fd, bytes, offset, length, pos,
+                guard((err, n) => (err ? reject(err) : resolve(n))));
+        });
+
+        return { bytesWritten, buffer: data };
+    }
+
+    readFile(options) {
+        return promises.readFile(this.fd, options);
+    }
+
+    writeFile(data, options) {
+        return promises.writeFile(this.fd, data, options);
+    }
+
+    appendFile(data, options) {
+        return promises.appendFile(this.fd, data, options);
+    }
+
+    stat() {
+        return new Promise((resolve, reject) => {
+            binding.fstat(this.fd, guard((err, raw) => (err ? reject(err) : resolve(new Stats(raw)))));
+        });
+    }
+
+    truncate(len = 0) {
+        return new Promise((resolve, reject) => {
+            binding.ftruncate(this.fd, len, guard(err => (err ? reject(err) : resolve())));
+        });
+    }
+
+    sync() {
+        return new Promise((resolve, reject) => {
+            binding.fsync(this.fd, false, guard(err => (err ? reject(err) : resolve())));
+        });
+    }
+
+    datasync() {
+        return new Promise((resolve, reject) => {
+            binding.fsync(this.fd, true, guard(err => (err ? reject(err) : resolve())));
+        });
+    }
+
+    createReadStream(options) {
+        return createReadStream(null, { ...getOptions(options, {}), fd: this.fd });
+    }
+
+    createWriteStream(options) {
+        return createWriteStream(null, { ...getOptions(options, {}), fd: this.fd });
+    }
+
+    close() {
+        return new Promise((resolve, reject) => {
+            binding.close(this.fd, guard(err => (err ? reject(err) : resolve())));
+        });
+    }
+
+    [Symbol.asyncDispose]() {
+        return this.close();
+    }
+}
+
+// --- omissions ---------------------------------------------------------------
+//
+// Present as stubs so a caller is told what it hit, rather than absent so it
+// reads as a typo. The reasoning for each is in runtime/docs/omissions.md.
+
+const WATCH_REASON = 'nothing on this device watches files, and FSWatcher semantics are ' +
+    'platform-specific enough that a half-built one would be worse than none';
+
+const watch = __native.omitted('fs.watch', WATCH_REASON);
+const watchFile = __native.omitted('fs.watchFile', WATCH_REASON);
+const unwatchFile = __native.omitted('fs.unwatchFile', WATCH_REASON);
+
 // --- fs.promises -------------------------------------------------------------
 //
 // A wrapper over the callback layer, as it is in Node — not a third
@@ -1561,6 +1949,155 @@ const promises = {
     constants
 };
 
+promises.opendir = promisify(opendir);
+promises.cp = promisify(cp);
+promises.watch = __native.omitted('fs.promises.watch', WATCH_REASON);
+
+// The one promise-only entry point: it resolves to a FileHandle, not a number.
+// The class itself is deliberately not exported: Node does not export it either,
+// and this module's surface is checked against Node's for extras.
+promises.open = function open(filePath, flags, mode = 0o666) {
+    return new Promise((resolve, reject) => {
+        binding.open(getPath(filePath), stringToFlags(flags), mode,
+            guard((err, fd) => (err ? reject(err) : resolve(new FileHandle(fd)))));
+    });
+};
+
+// --- cp ----------------------------------------------------------------------
+//
+// First-party rather than a vendored copy of one of the npm equivalents: the
+// whole of it is a walk over primitives we already have, and pulling a package
+// into the firmware image would be a dependency-policy event (DEPENDENCIES.md)
+// for something this size. The fidelity gaps against Node are in the exotic
+// options, not the common "copy this one file" call.
+
+function cpOptions(options) {
+    return getOptions(options, {
+        recursive: false,
+        force: true,
+        errorOnExist: false,
+        dereference: false,
+        preserveTimestamps: false
+    });
+}
+
+function cpSync(src, dest, options) {
+    const opts = cpOptions(options);
+
+    copyEntrySync(getPath(src, 'src'), getPath(dest, 'dest'), opts);
+}
+
+function copyEntrySync(src, dest, opts) {
+    if (opts.filter && !opts.filter(src, dest)) {
+        return;
+    }
+
+    const raw = opts.dereference ? binding.stat(src) : binding.lstat(src);
+    const type = raw.mode & constants.S_IFMT;
+
+    if (type === constants.S_IFDIR) {
+        if (!opts.recursive) {
+            throw nodeError('ERR_FS_EISDIR', 'Recursive option not enabled, cannot copy a directory', 'cp', src);
+        }
+
+        mkdirSync(dest, { recursive: true, mode: raw.mode & 0o777 });
+
+        for (const name of binding.readdir(src, false)) {
+            copyEntrySync(pathModule.join(src, name), pathModule.join(dest, name), opts);
+        }
+
+        return;
+    }
+
+    if (type === constants.S_IFLNK) {
+        const target = binding.readlink(src);
+
+        if (binding.access(dest, constants.F_OK, false)) {
+            binding.unlink(dest);
+        }
+
+        binding.symlink(target, dest, 0);
+
+        return;
+    }
+
+    if (binding.access(dest, constants.F_OK, false)) {
+        if (opts.errorOnExist && !opts.force) {
+            throw nodeError('ERR_FS_CP_EEXIST', 'Target already exists', 'cp', dest);
+        }
+
+        if (!opts.force) {
+            return;
+        }
+    }
+
+    binding.copyfile(src, dest, 0);
+
+    if (opts.preserveTimestamps) {
+        binding.utime(dest, raw.atimeMs / 1000, raw.mtimeMs / 1000);
+    }
+}
+
+// The asynchronous form is written against fs.promises rather than as a
+// callback chain: it is the same walk, and await keeps it readable.
+async function copyEntry(src, dest, opts) {
+    if (opts.filter && !(await opts.filter(src, dest))) {
+        return;
+    }
+
+    const raw = await (opts.dereference ? promises.stat(src) : promises.lstat(src));
+    const type = raw.mode & constants.S_IFMT;
+
+    if (type === constants.S_IFDIR) {
+        if (!opts.recursive) {
+            throw nodeError('ERR_FS_EISDIR', 'Recursive option not enabled, cannot copy a directory', 'cp', src);
+        }
+
+        await promises.mkdir(dest, { recursive: true, mode: raw.mode & 0o777 });
+
+        for (const name of await promises.readdir(src)) {
+            await copyEntry(pathModule.join(src, name), pathModule.join(dest, name), opts);
+        }
+
+        return;
+    }
+
+    if (type === constants.S_IFLNK) {
+        const target = await promises.readlink(src);
+
+        if (existsSync(dest)) {
+            await promises.unlink(dest);
+        }
+
+        await promises.symlink(target, dest);
+
+        return;
+    }
+
+    if (existsSync(dest)) {
+        if (opts.errorOnExist && !opts.force) {
+            throw nodeError('ERR_FS_CP_EEXIST', 'Target already exists', 'cp', dest);
+        }
+
+        if (!opts.force) {
+            return;
+        }
+    }
+
+    await promises.copyFile(src, dest);
+
+    if (opts.preserveTimestamps) {
+        await promises.utimes(dest, raw.atimeMs / 1000, raw.mtimeMs / 1000);
+    }
+}
+
+function cp(src, dest, options, callback) {
+    const [, cb] = optionsAndCallback(options, callback, {});
+    const opts = cpOptions(typeof options === 'function' ? undefined : options);
+
+    copyEntry(getPath(src, 'src'), getPath(dest, 'dest'), opts).then(() => cb(null), cb);
+}
+
 // --- exports ----------------------------------------------------------------
 
 module.exports = {
@@ -1571,6 +2108,18 @@ module.exports = {
 
     createReadStream,
     createWriteStream,
+    cp,
+    cpSync,
+    opendir,
+    opendirSync,
+    readv,
+    readvSync,
+    writev,
+    writevSync,
+    watch,
+    watchFile,
+    unwatchFile,
+    Dir,
 
     access,
     appendFile,
@@ -1643,6 +2192,18 @@ Object.defineProperty(module.exports, 'ReadStream', {
     get: () => getStreamClasses().ReadStream
 });
 Object.defineProperty(module.exports, 'WriteStream', {
+    configurable: true,
+    enumerable: true,
+    get: () => getStreamClasses().WriteStream
+});
+
+// Node still exports these two names for the same classes.
+Object.defineProperty(module.exports, 'FileReadStream', {
+    configurable: true,
+    enumerable: true,
+    get: () => getStreamClasses().ReadStream
+});
+Object.defineProperty(module.exports, 'FileWriteStream', {
     configurable: true,
     enumerable: true,
     get: () => getStreamClasses().WriteStream

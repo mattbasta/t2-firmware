@@ -339,12 +339,61 @@ reconstructed at the end.
    channel this runtime has no path to, nothing on the board uses it, and a
    `fork` that silently behaves like `spawn` is worse than one that says so.
 
+6. **`process.version` starts its own semver line at `v8.12.0`** — one minor
+   above 8.11.3, the highest Node the openwrt-tessel project ever shipped for
+   this board. Carried over from Phase 1 §7 and settled here. Reporting a modern
+   Node is worse than useless, since we are not Node and claiming v26 walks era
+   code into paths this runtime cannot serve; reporting anything *below* 8.11.3
+   risks being read as a genuinely older Node, from when 0.x and io.js were live
+   numbers; and everything in between is arbitrary. One minor above the ceiling
+   is the only position that is none of those. Our next release is 8.13.0, not
+   whatever Node does next.
+7. **Omissions are stubs that throw, not absent properties**, with the reasoning
+   for each in [omissions.md](omissions.md) and the message pointing there. The
+   tradeoff is recorded in that document: a stub makes feature detection
+   succeed, which is the wrong answer for a library with a fallback and the
+   right one for the far more common library that simply calls the method.
+8. **The binary replaces Node entirely** and is installed as `node`. No
+   side-by-side install, no versioned name.
+9. **SQLite stays in the default image.** The flash arithmetic below says it is
+   affordable; a "slim" build is the lever if that ever stops being true.
+
+### What the size budget actually is
+
+Measured on the board, 2026-09-08, since "8 MB" had been carried as a number
+without a denominator:
+
+| | |
+|---|---|
+| `firmware` partition (mtd3) | 33,226,752 B (31.7 MB) |
+| squashfs rootfs, read-only | 18 MB, full by construction |
+| `rootfs_data` overlay (mtd6) | 12.6 MB, 3.5 MB used, **9.1 MB free** |
+| The Node 4.2.1 binary we replace | **8,893,391 B** |
+| RAM | 60 MB total; ~22 MB free with nothing running |
+
+So the 8 MB gate is a **soft** limit, but not an arbitrary one: it is "fit where
+Node fits". At 6,336,520 bytes the runtime is about 2.5 MB *smaller* than the
+binary it displaces, so it returns flash rather than consuming it — and that is
+before squashfs compression. The binding constraint on this device is RAM at
+runtime, not flash at rest, which is where Phase 0's 4.7 MB RSS against Node 4's
+16.2 MB matters more than either number here.
+
 Still open:
 
-- **What `process.version` should report.** Carried over from Phase 1 §7,
-  where it was deferred to "Phase 2 or 3". It still tracks txiki's version and
-  reads as `v26.6.0` by coincidence rather than decision, which invites era code
-  down modern paths this runtime does not serve. Phase 2 is when the evidence
-  arrives: the corpus and the nodeunit run will show what actually feature-
-  detects on it. **Decide at the end of this phase, not the start**, and record
-  the answer here.
+- **`t2 run` blinky needs a working t2-cli.** Its `node-usb` 1.x will not build
+  on a modern Node, and forcing `usb@2` gets as far as a failed vendor-interface
+  handshake. **Decided: investigate the handshake failure on the device** rather
+  than route around it — it is a rabbit hole, but the alternative leaves the
+  gate resting on a tool nobody can run.
+- **"nodeunit suite green on device"** is left to judgement, and may move to a
+  later phase. Running grunt, nodeunit and sinon *on the board* is a much larger
+  ask than running the assertions; the plan is to exercise the suite against
+  this runtime on a host first and treat on-device as its own checkpoint.
+- **Upstreaming patches 0002/0003/0004.** All three were written to be
+  upstreamable. Four patches is a reasonable series to actually send; not on the
+  critical path.
+- **The mechanical `fs` family and the `constants` gaps**, queued in
+  [omissions.md](omissions.md) for step 4 alongside `os`.
+
+The board is online at 192.168.1.108 (USB attachment can be arranged when
+something needs it).

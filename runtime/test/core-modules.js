@@ -189,5 +189,27 @@ eq(typeof fsModule.ReadStream, 'function', 'touching fs.ReadStream produces the 
 eq(fsModule.ReadStream.prototype instanceof require('stream').Readable, true,
     'fs.ReadStream extends the real stream.Readable');
 
+// --- omissions --------------------------------------------------------------
+//
+// An omitted API is a stub that throws, not an absent property: "fs.watch is
+// not a function" sends the reader hunting for a typo. See
+// runtime/docs/omissions.md, which the message points at.
+eq(typeof fsModule.watch, 'function', 'an omitted method is present as a stub');
+
+// The stub logs once to stderr as well as throwing, so a stack trace appears
+// below this line. It is the feature working, not a failure.
+console.log('  (expect one ERR_NOT_IMPLEMENTED stack on stderr — the omission stub logs once)');
+
+try {
+    fsModule.watch('/tmp');
+    fail++;
+    console.log('FAIL omitted method did not throw');
+} catch (err) {
+    eq(err.code, 'ERR_NOT_IMPLEMENTED', 'an omitted method throws ERR_NOT_IMPLEMENTED');
+    eq(err.message.includes('fs.watch'), true, 'the error names the method');
+    eq(err.message.includes('runtime/docs/omissions.md'), true, 'the error points at the omissions list');
+    eq(typeof err.stack, 'string', 'the error carries a stack');
+}
+
 console.log(fail === 0 ? 'CORE MODULES: all pass' : `CORE MODULES: ${fail} FAILURES`);
 process.exitCode = fail === 0 ? 0 : 1;
