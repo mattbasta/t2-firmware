@@ -249,11 +249,17 @@ class Socket extends Duplex {
                 // ending the writable side too unless allowHalfOpen.
                 this.push(null);
 
-                // And then a nudge: readable-stream only emits 'end' once a
-                // read() finds the buffer drained, so a socket nobody consumes
-                // would sit ended-but-silent forever — and a server waiting on
-                // that connection would never finish closing. read(0) takes
-                // nothing out of the buffer; it just lets the stream notice.
+                // And then a nudge. A pushed EOF does not become an 'end'
+                // event on its own: something has to read() and find the buffer
+                // drained. Without this a socket nobody consumes sits
+                // ended-but-silent forever, and a server waiting on that
+                // connection never finishes closing.
+                //
+                // This is not a quirk of our readable-stream port — Node's
+                // streams behave identically, down to the same four cases — so
+                // do not remove it on the theory that newer streams would end
+                // by themselves. Node's own net.Socket does the same kick; that
+                // is the difference, and it is invisible from the stream API.
                 this.read(0);
 
                 return;
