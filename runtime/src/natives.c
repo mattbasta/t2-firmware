@@ -69,6 +69,23 @@ JSValue t2_throw_uv(JSContext *ctx, int r, const char *syscall, const char *path
     return t2_throw_uv2(ctx, r, syscall, path, NULL);
 }
 
+/* A callback invoked from inside a libuv callback has nowhere to throw. The JS
+ * layer wraps everything it installs and routes exceptions to
+ * process.on('uncaughtException'), so reaching this means the wrapper itself
+ * failed — which is worth saying out loud rather than swallowing. */
+void t2_report_exception(JSContext *ctx, const char *where) {
+    JSValue exc = JS_GetException(ctx);
+    const char *text = JS_ToCString(ctx, exc);
+
+    fprintf(stderr, "node: unhandled exception in %s: %s\n", where, text ? text : "(unprintable)");
+
+    if (text) {
+        JS_FreeCString(ctx, text);
+    }
+
+    JS_FreeValue(ctx, exc);
+}
+
 /*
  * evalScript(source, filename) -> completion value
  *
@@ -472,6 +489,7 @@ void t2_register_natives(JSContext *ctx) {
 
     t2_register_fs(ctx, natives);
     t2_register_constants(ctx, natives);
+    t2_register_net(ctx, natives);
 
     JS_SetPropertyStr(ctx, global, "__t2native", natives);
 

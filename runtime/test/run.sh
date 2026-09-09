@@ -20,7 +20,7 @@ command -v "${NODE%% *}" >/dev/null 2>&1 \
 status=0
 
 # corpus/index.js self-skips when runtime/test/corpus/fetch.sh has not been run.
-for suite in buffer.js process.js core-modules.js stream.js fs.js loader/index.js corpus/index.js; do
+for suite in buffer.js process.js core-modules.js stream.js fs.js net.js loader/index.js corpus/index.js; do
     if ! $NODE "$TEST/$suite" one two; then
         status=1
     fi

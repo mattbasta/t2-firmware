@@ -204,6 +204,7 @@ function main() {
         pathKind: native.pathKind,
         loadCoreModule: native.loadCoreModule,
         fs: native.fs,
+        net: native.net,
         constants: native.constants,
         handleUncaught,
         omitted,

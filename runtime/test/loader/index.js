@@ -64,7 +64,7 @@ eq(require('buffer').Buffer === Buffer, true, 'core: buffer');
 // from one that does not exist. Track this to whatever is still pending: fs
 // moved out of this slot in Phase 2, and net will move out of it too.
 try {
-    require('net');
+    require('child_process');
     fail++;
     console.log('FAIL unimplemented core module did not throw');
 } catch (err) {
@@ -72,6 +72,7 @@ try {
 }
 
 eq(typeof require('fs').readFileSync, 'function', 'core: fs');
+eq(typeof require('net').createConnection, 'function', 'core: net');
 
 try {
     require('./nope');

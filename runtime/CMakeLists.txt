@@ -19,6 +19,7 @@ add_executable(t2-node
     src/natives.c
     src/fs.c
     src/constants.c
+    src/net.c
     src/bundles/entry.c
     src/bundles/core_modules.c
 )

@@ -20,17 +20,19 @@ being the thing the board actually runs.
 
 ## 0. Status
 
-**Step 1 is done.** `fs` has all four surfaces — synchronous, callback,
+**Steps 1 and 2 are done.** `fs` has all four surfaces — synchronous, callback,
 `promises`, and `createReadStream`/`createWriteStream` — along with `constants`
-(§2a). Patch 0004 has landed on the fork (`t2/v26.6.0+tessel.4`, d6b37e3a).
-Seven suites pass on x86-64 and on mipsel under QEMU; the cross-built binary is
-6,336,520 bytes, 53,252 more than Phase 1's, against an 8 MB gate. Next is
-`net`.
+(§2a). `net` has `Socket` as a `Duplex` over first-party libuv handles, `Server`,
+Unix sockets and TCP, and name resolution. Patch 0004 has landed on the fork
+(`t2/v26.6.0+tessel.4`, d6b37e3a). Eight suites pass on x86-64 and on mipsel
+under QEMU; the cross-built binary is 6,366,764 bytes, 83,496 more than Phase
+1's, against an 8 MB gate. Next is `child_process`, which is what blinky is
+actually waiting on (§5, step 2).
 
 | | Eager | Lazy |
 |---|---|---|
-| Kernel | 33,429 B | — |
-| Core modules (Phase 1's seven, plus `fs` and `constants`) | — | 107,912 B |
+| Kernel | 33,833 B | — |
+| Core modules (Phase 1's seven, plus `fs`, `constants` and `net`) | — | 126,612 B |
 
 The corpus grew with it: `rimraf` over `glob` — eleven pinned packages — now
 runs on the callback layer, which is the deepest third-party stack in the
@@ -239,9 +241,15 @@ testable, and so blinky is reachable before the largest remaining piece starts.
    phase's biggest piece of JS in front of its first upstream change rather than
    behind it.
 2. **`net`** — the handle native, then `Socket` as a `Duplex`, Unix sockets
-   before TCP, then `Server`. **Blinky is reachable at the end of this step:**
-   an LED write is `fs.writeFile` to sysfs and a `Port` is the spid socket;
-   neither touches `child_process`.
+   before TCP, then `Server`.
+
+   This step originally claimed blinky would be reachable at the end of it, on
+   the grounds that an LED write is `fs.writeFile` to sysfs and a `Port` is the
+   spid socket, neither of which touches `child_process`. **That was wrong, and
+   measured wrong rather than reasoned wrong:** `tessel-export.js` requires
+   `child_process` on line 4, so the module cannot load at all until step 3,
+   whatever the blinky code path happens to touch. Requiring it on this runtime
+   today fails with exactly that. Blinky moves to the end of step 3.
 3. **`child_process`** — `spawn`, then `exec`/`execFile` over it, then the
    synchronous family on its private loop.
 4. **`os`, `tty`, `dns.lookup`** — small, independent, parallelizable.

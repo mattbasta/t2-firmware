@@ -138,16 +138,7 @@ static void t2_fs_async_cb(uv_fs_t *req) {
      * itself failed. Nothing can be done from inside a loop callback except say
      * so rather than swallow it. */
     if (JS_IsException(ret)) {
-        JSValue exc = JS_GetException(ctx);
-        const char *text = JS_ToCString(ctx, exc);
-
-        fprintf(stderr, "node: unhandled exception in an fs callback: %s\n", text ? text : "(unprintable)");
-
-        if (text) {
-            JS_FreeCString(ctx, text);
-        }
-
-        JS_FreeValue(ctx, exc);
+        t2_report_exception(ctx, "an fs callback");
     }
 
     JS_FreeValue(ctx, ret);

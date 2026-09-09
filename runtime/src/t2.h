@@ -25,6 +25,14 @@ void t2_register_fs(JSContext *ctx, JSValue natives);
 void t2_fill_constants(JSContext *ctx, JSValue obj);
 void t2_register_constants(JSContext *ctx, JSValue natives);
 
+/* The libuv stream handles behind node:net — pipes and TCP, plus name
+ * resolution. See runtime/src/net.c. */
+void t2_register_net(JSContext *ctx, JSValue natives);
+
+/* Reports an exception that escaped a callback invoked from inside a libuv
+ * callback, where there is nowhere to throw it. */
+void t2_report_exception(JSContext *ctx, const char *where);
+
 /* Throws a Node-shaped error for a libuv status: `code`, `errno`, `syscall`,
  * `path`, and Node's own message text, which era code prints as often as it
  * branches on it. The two-path form is for rename/link/symlink/copyfile, whose
