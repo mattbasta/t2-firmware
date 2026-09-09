@@ -180,6 +180,8 @@ step 4.
 
 Everything below goes in `runtime/src/natives.c` behind the same `__t2native`
 object, under the same bar Phase 1 set: native only when JS cannot express it.
+Where that bar falls, and what may cross the C/JS boundary in each direction, is
+[layering.md](layering.md).
 
 - **A `uv_fs_*` binding table** — `open`, `read`, `write`, `close`, `stat`,
   `lstat`, `fstat`, `readdir`, `unlink`, `rename`, `mkdir`, `rmdir`, `access`,
