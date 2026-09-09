@@ -1,0 +1,62 @@
+From d6b37e3a255f2c43d5ae26189926349200e73933 Mon Sep 17 00:00:00 2001
+From: Matt Basta <mattbasta@mac.lan>
+Date: Tue, 8 Sep 2026 22:37:52 -0400
+Subject: [PATCH 4/4] Expose the event loop to embedders
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+TJS_GetLoop() is defined in vm.c and externally linked, but declared only in
+private.h, so a program that links libtjs_core cannot reach the loop its own
+runtime is running on. That leaves embedders unable to add libuv-backed
+natives of their own — the same gap TJSRunOptions.entry closed for the
+entrypoint.
+
+Move the declaration to tjs.h. No new code and nothing added to the ABI that
+was not already exported; uv_loop_s is forward-declared rather than including
+uv.h, so an embedder that does not touch the loop is unaffected.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ src/private.h | 1 -
+ src/tjs.h     | 5 +++++
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/private.h b/src/private.h
+index 518eec53..4f19b90e 100644
+--- a/src/private.h
++++ b/src/private.h
+@@ -249,7 +249,6 @@ struct lws_vhost *tjs__lws_select_vhost(JSContext *ctx, const char *scheme, cons
+ int tjs__lws_load_http(TJSRuntime *qrt, TBuf *dbuf, const char *url);
+ void tjs__lws_format_host(char *buf, size_t buflen, const char *scheme, const char *host, int port);
+ 
+-uv_loop_t *TJS_GetLoop(TJSRuntime *qrt);
+ TJSRuntime *TJS_NewRuntimeWorker(void);
+ TJSRuntime *TJS_NewRuntimeInternal(bool is_worker, TJSRunOptions *options);
+ JSValue TJS_EvalScript(JSContext *ctx, const char *filename);
+diff --git a/src/tjs.h b/src/tjs.h
+index a070f3f4..549c088d 100644
+--- a/src/tjs.h
++++ b/src/tjs.h
+@@ -30,6 +30,10 @@
+ 
+ typedef struct TJSRuntime TJSRuntime;
+ 
++/* Forward-declared rather than including uv.h: an embedder that does not touch
++   the loop should not have libuv on its include path to use this header. */
++struct uv_loop_s;
++
+ typedef struct TJSRunOptions {
+     int mem_limit;
+     size_t stack_size;
+@@ -47,6 +51,7 @@ void TJS_FreeRuntime(TJSRuntime *qrt);
+ void TJS_Initialize(int argc, char **argv);
+ JSContext *TJS_GetJSContext(TJSRuntime *qrt);
+ TJSRuntime *TJS_GetRuntime(JSContext *ctx);
++struct uv_loop_s *TJS_GetLoop(TJSRuntime *qrt);
+ int TJS_Run(TJSRuntime *qrt);
+ void TJS_Stop(TJSRuntime *qrt);
+ 
+-- 
+2.50.1 (Apple Git-155)
+

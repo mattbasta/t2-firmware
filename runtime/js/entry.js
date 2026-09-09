@@ -177,6 +177,7 @@ function main() {
         loadCoreModule: native.loadCoreModule,
         fs: native.fs,
         constants: native.constants,
+        handleUncaught,
         cwd: () => process.cwd()
     });
     registerCoreModules();

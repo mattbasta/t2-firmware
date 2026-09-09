@@ -260,9 +260,196 @@ throws(() => fs.rmdirSync(path.join(dir, 'sub')), 'ENOTEMPTY', 'rmdirSync on a n
 fs.rmSync(path.join(dir, 'sub'), { recursive: true });
 eq(fs.existsSync(path.join(dir, 'sub')), false, 'rmSync removed the subtree');
 
-// clean up
-fs.rmSync(dir, { recursive: true, force: true });
-eq(fs.existsSync(dir), false, 'scratch directory removed');
+// --- the callback surface ---------------------------------------------------
 
-console.log(fail === 0 ? 'FS: all pass' : `FS: ${fail} FAILURES`);
-process.exitCode = fail === 0 ? 0 : 1;
+const rejects = async (promise, code, label) => {
+    try {
+        await promise;
+        fail++;
+        console.log('FAIL', label, '-> did not reject');
+    } catch (err) {
+        if (err.code !== code) {
+            fail++;
+            console.log('FAIL', label, '-> code', err.code, '!=', code);
+        }
+    }
+};
+
+const call = (fn, ...args) =>
+    new Promise((resolve, reject) => {
+        fn(...args, (err, ...rest) => (err ? reject(err) : resolve(rest.length > 1 ? rest : rest[0])));
+    });
+
+async function asyncTests() {
+    const adir = await call(fs.mkdtemp, '/tmp/t2fsa-');
+    const afile = path.join(adir, 'a.txt');
+
+    // A callback must never run in the turn that scheduled it. Era code relies
+    // on this; a synchronous call hidden behind an async name breaks it.
+    let sameTurn = true;
+    let ranInSameTurn = false;
+
+    fs.stat(adir, () => {
+        ranInSameTurn = sameTurn;
+    });
+    sameTurn = false;
+
+    await call(fs.writeFile, afile, 'hello');
+    eq(ranInSameTurn, false, 'callbacks do not run in the calling turn');
+
+    eq(await call(fs.readFile, afile, 'utf8'), 'hello', 'writeFile/readFile round trip');
+    eq(Buffer.isBuffer(await call(fs.readFile, afile)), true, 'readFile defaults to a Buffer');
+
+    await call(fs.appendFile, afile, ' world');
+    eq(await call(fs.readFile, afile, 'utf8'), 'hello world', 'appendFile');
+
+    await call(fs.writeFile, afile, Buffer.from([1, 2, 3]));
+    eq((await call(fs.readFile, afile)).length, 3, 'writeFile accepts a Buffer');
+
+    await call(fs.writeFile, afile, 'hello');
+
+    // stat
+    const ast = await call(fs.stat, afile);
+
+    eq(ast instanceof fs.Stats, true, 'stat yields a Stats');
+    eq(ast.isFile(), true, 'async stat isFile');
+    eq(ast.size, 5, 'async stat size');
+    eq((await call(fs.lstat, afile)).isFile(), true, 'async lstat');
+
+    // descriptors
+    const afd = await call(fs.open, afile, 'r');
+    const abuf = Buffer.alloc(5);
+    const readResult = await call(fs.read, afd, abuf, 0, 5, 0);
+
+    eq(readResult[0], 5, 'async read reports the byte count');
+    eq(Buffer.isBuffer(readResult[1]), true, 'async read passes the buffer back');
+    eq(abuf.toString(), 'hello', 'async read filled the buffer');
+    eq((await call(fs.fstat, afd)).size, 5, 'async fstat');
+    await call(fs.close, afd);
+
+    const wfd2 = await call(fs.open, path.join(adir, 'w.txt'), 'w');
+
+    eq((await call(fs.write, wfd2, 'abc'))[0], 3, 'async write(string)');
+    await call(fs.fsync, wfd2);
+    await call(fs.fdatasync, wfd2);
+    await call(fs.close, wfd2);
+    eq(await call(fs.readFile, path.join(adir, 'w.txt'), 'utf8'), 'abc', 'async write contents');
+
+    // directories
+    await call(fs.mkdir, path.join(adir, 'sub'));
+    await call(fs.writeFile, path.join(adir, 'sub', 'b.txt'), 'b');
+
+    const anames = (await call(fs.readdir, adir)).sort();
+
+    eq(anames.join(), 'a.txt,sub,w.txt', 'async readdir');
+
+    const aents = await call(fs.readdir, adir, { withFileTypes: true });
+
+    eq(aents.find(e => e.name === 'sub').isDirectory(), true, 'async readdir withFileTypes');
+
+    const deepFirst = await call(fs.mkdir, path.join(adir, 'p', 'q', 'r'), { recursive: true });
+
+    eq(deepFirst, path.join(adir, 'p'), 'async recursive mkdir reports the topmost created');
+    eq(fs.existsSync(path.join(adir, 'p', 'q', 'r')), true, 'async recursive mkdir created the leaf');
+    eq(await call(fs.mkdir, path.join(adir, 'p', 'q', 'r'), { recursive: true }), undefined,
+        'async recursive mkdir is idempotent');
+
+    // links, copies, moves
+    const alink = path.join(adir, 'link.txt');
+
+    await call(fs.symlink, afile, alink);
+    eq(await call(fs.readlink, alink), afile, 'async readlink');
+    eq(await call(fs.realpath, alink), await call(fs.realpath, afile), 'async realpath resolves the link');
+    eq((await call(fs.lstat, alink)).isSymbolicLink(), true, 'async lstat sees the link');
+
+    await call(fs.copyFile, afile, path.join(adir, 'copy.txt'));
+    eq(await call(fs.readFile, path.join(adir, 'copy.txt'), 'utf8'), 'hello', 'async copyFile');
+
+    await call(fs.rename, path.join(adir, 'copy.txt'), path.join(adir, 'moved.txt'));
+    eq(fs.existsSync(path.join(adir, 'copy.txt')), false, 'async rename removed the source');
+
+    await call(fs.truncate, path.join(adir, 'moved.txt'), 2);
+    eq(await call(fs.readFile, path.join(adir, 'moved.txt'), 'utf8'), 'he', 'async truncate');
+
+    await call(fs.chmod, path.join(adir, 'moved.txt'), 0o600);
+    eq((await call(fs.stat, path.join(adir, 'moved.txt'))).mode & 0o777, 0o600, 'async chmod');
+
+    await call(fs.utimes, path.join(adir, 'moved.txt'), new Date(1000000), new Date(3000000));
+    eq(Math.round((await call(fs.stat, path.join(adir, 'moved.txt'))).mtimeMs), 3000000, 'async utimes');
+
+    await call(fs.unlink, path.join(adir, 'moved.txt'));
+    eq(fs.existsSync(path.join(adir, 'moved.txt')), false, 'async unlink');
+
+    // access and the legacy exists
+    eq(await call(fs.access, afile), undefined, 'async access on a readable file');
+    await rejects(call(fs.access, path.join(adir, 'nope')), 'ENOENT', 'async access on a missing path');
+    eq(await new Promise(resolve => fs.exists(afile, resolve)), true, 'fs.exists on a file');
+    eq(await new Promise(resolve => fs.exists(path.join(adir, 'nope'), resolve)), false,
+        'fs.exists on a missing path');
+
+    // errors carry the same shape as the synchronous ones
+    await rejects(call(fs.readFile, path.join(adir, 'nope')), 'ENOENT', 'async readFile on a missing file');
+
+    let asyncErr;
+
+    await new Promise(resolve => fs.stat(path.join(adir, 'nope'), err => {
+        asyncErr = err;
+        resolve();
+    }));
+
+    eq(asyncErr.code, 'ENOENT', 'async error code');
+    eq(asyncErr.syscall, 'stat', 'async error syscall');
+    eq(asyncErr.path, path.join(adir, 'nope'), 'async error path');
+    eq(asyncErr.message.startsWith('ENOENT: no such file or directory, stat '), true,
+        `async error message (${asyncErr.message})`);
+
+    // An exception thrown inside an fs callback is an uncaught exception, not
+    // something the event loop swallows. The C completion cannot make that
+    // call, so fs wraps every callback it hands down.
+    await new Promise(resolve => {
+        const onUncaught = err => {
+            eq(err.message, 'thrown from an fs callback', 'a throwing callback reaches uncaughtException');
+            process.removeListener('uncaughtException', onUncaught);
+            resolve();
+        };
+
+        process.on('uncaughtException', onUncaught);
+
+        fs.stat(afile, () => {
+            throw new Error('thrown from an fs callback');
+        });
+    });
+
+    // --- fs.promises ---------------------------------------------------------
+    const pdir = await fs.promises.mkdtemp('/tmp/t2fsp-');
+    const pfile = path.join(pdir, 'p.txt');
+
+    await fs.promises.writeFile(pfile, 'promised');
+    eq(await fs.promises.readFile(pfile, 'utf8'), 'promised', 'promises writeFile/readFile');
+    eq((await fs.promises.stat(pfile)).isFile(), true, 'promises stat');
+    eq((await fs.promises.readdir(pdir)).join(), 'p.txt', 'promises readdir');
+    eq(typeof fs.promises.constants.O_RDONLY, 'number', 'promises carries constants');
+    await rejects(fs.promises.readFile(path.join(pdir, 'nope')), 'ENOENT', 'promises reject with the code');
+    await fs.promises.rm(pdir, { recursive: true });
+    eq(fs.existsSync(pdir), false, 'promises rm');
+
+    // --- recursive removal ---------------------------------------------------
+    await rejects(call(fs.rm, path.join(adir, 'p')), 'ERR_FS_EISDIR', 'async rm on a directory');
+    await call(fs.rm, path.join(adir, 'p'), { recursive: true });
+    eq(fs.existsSync(path.join(adir, 'p')), false, 'async recursive rm');
+    eq(await call(fs.rm, path.join(adir, 'gone'), { force: true }), undefined, 'async rm force');
+
+    await call(fs.rm, adir, { recursive: true, force: true });
+    eq(fs.existsSync(adir), false, 'async scratch directory removed');
+}
+
+asyncTests().then(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+    eq(fs.existsSync(dir), false, 'scratch directory removed');
+
+    console.log(fail === 0 ? 'FS: all pass' : `FS: ${fail} FAILURES`);
+    process.exitCode = fail === 0 ? 0 : 1;
+}, err => {
+    console.log('FS: async tests threw ->', err && err.stack ? err.stack : err);
+    process.exitCode = 1;
+});

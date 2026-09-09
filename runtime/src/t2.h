@@ -33,6 +33,10 @@ void t2_register_constants(JSContext *ctx, JSValue natives);
 JSValue t2_throw_uv(JSContext *ctx, int r, const char *syscall, const char *path);
 JSValue t2_throw_uv2(JSContext *ctx, int r, const char *syscall, const char *path, const char *dest);
 
+/* The same error as a value rather than a throw: an asynchronous completion
+ * hands it to a callback instead of raising it. */
+JSValue t2_new_uv_error(JSContext *ctx, int r, const char *syscall, const char *path, const char *dest);
+
 /* One core module, precompiled to QuickJS bytecode. Each entry's bytecode is a
  * *script* whose completion value is the CommonJS wrapper function, so it can be
  * read and called only when something actually requires that module — the

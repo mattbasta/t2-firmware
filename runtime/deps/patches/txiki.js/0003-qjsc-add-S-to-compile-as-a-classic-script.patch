@@ -1,7 +1,7 @@
 From 950ddc596bfec08880e9f4d8732ed30fcb313376 Mon Sep 17 00:00:00 2001
 From: Matt Basta <mattbasta@mac.lan>
 Date: Tue, 8 Sep 2026 17:37:18 -0400
-Subject: [PATCH 3/3] qjsc: add -S to compile as a classic script
+Subject: [PATCH 3/4] qjsc: add -S to compile as a classic script
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

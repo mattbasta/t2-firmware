@@ -3,8 +3,9 @@
  *
  * The bindings under node:fs. One table serves both halves of Node's fs: every
  * uv_fs_* call runs synchronously when handed no callback and on the threadpool
- * when handed one, which is the same switch Node itself is built on. This file
- * is the synchronous half; see runtime/docs/phase2-plan.md §2.
+ * when handed one, which is the same switch Node itself is built on, and it is
+ * why there is one function per operation here rather than two. See
+ * runtime/docs/phase2-plan.md §2.
  *
  * Nothing here is a Node API. These are the thin, uniform primitives that
  * runtime/js/node/fs.js builds fs.readFileSync, fs.read and fs.promises.read
@@ -15,11 +16,190 @@
  */
 
 #include "t2.h"
+#include "tjs.h"
 
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <uv.h>
+
+/* --- asynchronous requests ------------------------------------------------
+ *
+ * Every operation below takes an optional trailing callback. With one it runs
+ * on libuv's threadpool and reports through the callback; without one it runs
+ * inline and throws. The dispatch is the presence of a function, and the result
+ * shape comes from req->fs_type, which libuv records for us.
+ */
+
+typedef struct {
+    uv_fs_t req;
+    JSContext *ctx;
+    JSValue callback;
+    /* Kept alive for the duration of a read/write: the buffer is written to by
+     * the threadpool, so it must not be collected while the request is live. */
+    JSValue buffer;
+    int with_types;
+} t2_fs_req_t;
+
+static uv_loop_t *t2_fs_loop(JSContext *ctx) {
+    /* TJS_GetLoop is public as of fork patch 0004; before it, an embedder had
+     * no way to reach the loop its own runtime runs on. */
+    return TJS_GetLoop(TJS_GetRuntime(ctx));
+}
+
+/* libuv records the operation on the request; Node's error messages name it. */
+static const char *t2_fs_syscall(uv_fs_type type) {
+    switch (type) {
+        case UV_FS_OPEN: return "open";
+        case UV_FS_CLOSE: return "close";
+        case UV_FS_READ: return "read";
+        case UV_FS_WRITE: return "write";
+        case UV_FS_STAT: return "stat";
+        case UV_FS_LSTAT: return "lstat";
+        case UV_FS_FSTAT: return "fstat";
+        case UV_FS_SCANDIR: return "scandir";
+        case UV_FS_UNLINK: return "unlink";
+        case UV_FS_RMDIR: return "rmdir";
+        case UV_FS_MKDIR: return "mkdir";
+        case UV_FS_MKDTEMP: return "mkdtemp";
+        case UV_FS_ACCESS: return "access";
+        case UV_FS_CHMOD: return "chmod";
+        case UV_FS_READLINK: return "readlink";
+        case UV_FS_RENAME: return "rename";
+        case UV_FS_LINK: return "link";
+        case UV_FS_SYMLINK: return "symlink";
+        case UV_FS_COPYFILE: return "copyfile";
+        case UV_FS_FTRUNCATE: return "ftruncate";
+        case UV_FS_FSYNC: return "fsync";
+        case UV_FS_FDATASYNC: return "fdatasync";
+        case UV_FS_UTIME: return "utime";
+        default: return "fs";
+    }
+}
+
+static JSValue t2_stat_object(JSContext *ctx, const uv_stat_t *st);
+static JSValue t2_dirent_array(JSContext *ctx, uv_fs_t *req, int with_types);
+
+static void t2_fs_async_cb(uv_fs_t *req) {
+    t2_fs_req_t *fr = (t2_fs_req_t *) req;
+    JSContext *ctx = fr->ctx;
+
+    /* Node's callbacks are (err, result), except read/write, which are
+     * (err, bytesTransferred, buffer). */
+    JSValue args[3];
+    int nargs = 2;
+
+    if (req->result < 0) {
+        args[0] = t2_new_uv_error(ctx, (int) req->result, t2_fs_syscall(req->fs_type), req->path, NULL);
+        args[1] = JS_UNDEFINED;
+    } else {
+        args[0] = JS_NULL;
+
+        switch (req->fs_type) {
+            case UV_FS_OPEN:
+                args[1] = JS_NewInt32(ctx, (int32_t) req->result);
+                break;
+
+            case UV_FS_READ:
+            case UV_FS_WRITE:
+                args[1] = JS_NewInt64(ctx, (int64_t) req->result);
+                args[2] = JS_DupValue(ctx, fr->buffer);
+                nargs = 3;
+                break;
+
+            case UV_FS_STAT:
+            case UV_FS_LSTAT:
+            case UV_FS_FSTAT:
+                args[1] = t2_stat_object(ctx, &req->statbuf);
+                break;
+
+            case UV_FS_SCANDIR:
+                args[1] = t2_dirent_array(ctx, req, fr->with_types);
+                break;
+
+            case UV_FS_READLINK:
+                args[1] = JS_NewString(ctx, req->ptr);
+                break;
+
+            case UV_FS_MKDTEMP:
+                args[1] = JS_NewString(ctx, req->path);
+                break;
+
+            default:
+                args[1] = JS_UNDEFINED;
+                break;
+        }
+    }
+
+    JSValue ret = JS_Call(ctx, fr->callback, JS_UNDEFINED, nargs, args);
+
+    /* fs.js wraps every callback it hands us, so a throw here means the wrapper
+     * itself failed. Nothing can be done from inside a loop callback except say
+     * so rather than swallow it. */
+    if (JS_IsException(ret)) {
+        JSValue exc = JS_GetException(ctx);
+        const char *text = JS_ToCString(ctx, exc);
+
+        fprintf(stderr, "node: unhandled exception in an fs callback: %s\n", text ? text : "(unprintable)");
+
+        if (text) {
+            JS_FreeCString(ctx, text);
+        }
+
+        JS_FreeValue(ctx, exc);
+    }
+
+    JS_FreeValue(ctx, ret);
+
+    for (int i = 0; i < nargs; i++) {
+        JS_FreeValue(ctx, args[i]);
+    }
+
+    JS_FreeValue(ctx, fr->callback);
+    JS_FreeValue(ctx, fr->buffer);
+
+    uv_fs_req_cleanup(req);
+    js_free(ctx, fr);
+}
+
+/* Returns a live request when `cb` is a function, and NULL to mean "run this
+ * one synchronously". The uv_fs_t is the first member, so the request and the
+ * uv handle are one allocation. */
+static t2_fs_req_t *t2_fs_async_begin(JSContext *ctx, JSValue cb, JSValue keep, int with_types) {
+    if (!JS_IsFunction(ctx, cb)) {
+        return NULL;
+    }
+
+    t2_fs_req_t *fr = js_mallocz(ctx, sizeof(*fr));
+
+    if (!fr) {
+        return NULL;
+    }
+
+    fr->ctx = ctx;
+    fr->callback = JS_DupValue(ctx, cb);
+    fr->buffer = JS_DupValue(ctx, keep);
+    fr->with_types = with_types;
+
+    return fr;
+}
+
+/* A negative return from an *async* uv_fs_* call means the request never
+ * started — out of memory, essentially. Real I/O failures arrive at the
+ * callback instead, so this throws rather than reporting. */
+static JSValue t2_fs_async_end(JSContext *ctx, t2_fs_req_t *fr, int r, const char *syscall) {
+    if (r < 0) {
+        JS_FreeValue(ctx, fr->callback);
+        JS_FreeValue(ctx, fr->buffer);
+        uv_fs_req_cleanup(&fr->req);
+        js_free(ctx, fr);
+
+        return t2_throw_uv(ctx, r, syscall, NULL);
+    }
+
+    return JS_UNDEFINED;
+}
 
 /* Paths arrive from JS as strings and have to be freed on every exit path.
  * These two keep that from being written out twenty times over. */
@@ -74,6 +254,16 @@ static JSValue t2_stat_object(JSContext *ctx, const uv_stat_t *st) {
 static JSValue t2_fs_stat(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
     T2_FS_BEGIN_PATH(0);
 
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[1], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_stat(t2_fs_loop(ctx), &fr->req, path, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "stat");
+    }
+
     int r = uv_fs_stat(NULL, &req, path, NULL);
 
     T2_FS_END_PATH(r, "stat");
@@ -88,6 +278,16 @@ static JSValue t2_fs_stat(JSContext *ctx, JSValue this_val, int argc, JSValue *a
 
 static JSValue t2_fs_lstat(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
     T2_FS_BEGIN_PATH(0);
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[1], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_lstat(t2_fs_loop(ctx), &fr->req, path, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "lstat");
+    }
 
     int r = uv_fs_lstat(NULL, &req, path, NULL);
 
@@ -106,6 +306,14 @@ static JSValue t2_fs_fstat(JSContext *ctx, JSValue this_val, int argc, JSValue *
 
     if (JS_ToInt32(ctx, &fd, argv[0])) {
         return JS_EXCEPTION;
+    }
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[1], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_fstat(t2_fs_loop(ctx), &fr->req, fd, t2_fs_async_cb);
+
+        return t2_fs_async_end(ctx, fr, ar, "fstat");
     }
 
     uv_fs_t req;
@@ -135,6 +343,16 @@ static JSValue t2_fs_open(JSContext *ctx, JSValue this_val, int argc, JSValue *a
         return JS_EXCEPTION;
     }
 
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[3], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_open(t2_fs_loop(ctx), &fr->req, path, flags, mode, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "open");
+    }
+
     int r = uv_fs_open(NULL, &req, path, flags, mode, NULL);
 
     T2_FS_END_PATH(r, "open");
@@ -150,6 +368,14 @@ static JSValue t2_fs_close(JSContext *ctx, JSValue this_val, int argc, JSValue *
 
     if (JS_ToInt32(ctx, &fd, argv[0])) {
         return JS_EXCEPTION;
+    }
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[1], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_close(t2_fs_loop(ctx), &fr->req, fd, t2_fs_async_cb);
+
+        return t2_fs_async_end(ctx, fr, ar, "close");
     }
 
     uv_fs_t req;
@@ -192,8 +418,20 @@ static JSValue t2_fs_read(JSContext *ctx, JSValue this_val, int argc, JSValue *a
         return JS_ThrowRangeError(ctx, "offset/length out of range for the given buffer");
     }
 
-    uv_fs_t req;
     uv_buf_t b = uv_buf_init((char *) bytes + offset, (unsigned int) length);
+
+    /* The buffer is handed to the threadpool, so the request holds a reference
+     * to it until completion — otherwise a collection during the read would
+     * leave libuv writing into freed memory. */
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[5], argv[1], 0);
+
+    if (fr) {
+        int ar = uv_fs_read(t2_fs_loop(ctx), &fr->req, fd, &b, 1, position, t2_fs_async_cb);
+
+        return t2_fs_async_end(ctx, fr, ar, "read");
+    }
+
+    uv_fs_t req;
     int r = uv_fs_read(NULL, &req, fd, &b, 1, position, NULL);
 
     uv_fs_req_cleanup(&req);
@@ -233,8 +471,20 @@ static JSValue t2_fs_write(JSContext *ctx, JSValue this_val, int argc, JSValue *
         return JS_ThrowRangeError(ctx, "offset/length out of range for the given buffer");
     }
 
-    uv_fs_t req;
     uv_buf_t b = uv_buf_init((char *) bytes + offset, (unsigned int) length);
+
+    /* The buffer is handed to the threadpool, so the request holds a reference
+     * to it until completion — otherwise a collection during the read would
+     * leave libuv writing into freed memory. */
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[5], argv[1], 0);
+
+    if (fr) {
+        int ar = uv_fs_write(t2_fs_loop(ctx), &fr->req, fd, &b, 1, position, t2_fs_async_cb);
+
+        return t2_fs_async_end(ctx, fr, ar, "write");
+    }
+
+    uv_fs_t req;
     int r = uv_fs_write(NULL, &req, fd, &b, 1, position, NULL);
 
     uv_fs_req_cleanup(&req);
@@ -253,19 +503,12 @@ static JSValue t2_fs_write(JSContext *ctx, JSValue this_val, int argc, JSValue *
  * One scandir either way. The type comes back from the same syscall that
  * produced the name, so withFileTypes costs nothing extra — which is the point:
  * Node's alternative is a stat() per entry. */
-static JSValue t2_fs_readdir(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
-    T2_FS_BEGIN_PATH(0);
-
-    int with_types = JS_ToBool(ctx, argv[1]);
-    int r = uv_fs_scandir(NULL, &req, path, 0, NULL);
-
-    T2_FS_END_PATH(r, "scandir");
-
+static JSValue t2_dirent_array(JSContext *ctx, uv_fs_t *req, int with_types) {
     JSValue arr = JS_NewArray(ctx);
     uv_dirent_t ent;
     uint32_t i = 0;
 
-    while (uv_fs_scandir_next(&req, &ent) != UV_EOF) {
+    while (uv_fs_scandir_next(req, &ent) != UV_EOF) {
         JSValue item;
 
         if (with_types) {
@@ -279,6 +522,30 @@ static JSValue t2_fs_readdir(JSContext *ctx, JSValue this_val, int argc, JSValue
         JS_SetPropertyUint32(ctx, arr, i++, item);
     }
 
+    return arr;
+}
+
+static JSValue t2_fs_readdir(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
+    T2_FS_BEGIN_PATH(0);
+
+    int with_types = JS_ToBool(ctx, argv[1]);
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[2], JS_UNDEFINED, with_types);
+
+    if (fr) {
+        int ar = uv_fs_scandir(t2_fs_loop(ctx), &fr->req, path, 0, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "scandir");
+    }
+
+    int r = uv_fs_scandir(NULL, &req, path, 0, NULL);
+
+    T2_FS_END_PATH(r, "scandir");
+
+    JSValue arr = t2_dirent_array(ctx, &req, with_types);
+
     uv_fs_req_cleanup(&req);
     JS_FreeCString(ctx, path);
 
@@ -289,6 +556,16 @@ static JSValue t2_fs_readdir(JSContext *ctx, JSValue this_val, int argc, JSValue
 
 static JSValue t2_fs_unlink(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
     T2_FS_BEGIN_PATH(0);
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[1], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_unlink(t2_fs_loop(ctx), &fr->req, path, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "unlink");
+    }
 
     int r = uv_fs_unlink(NULL, &req, path, NULL);
 
@@ -302,6 +579,16 @@ static JSValue t2_fs_unlink(JSContext *ctx, JSValue this_val, int argc, JSValue 
 
 static JSValue t2_fs_rmdir(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
     T2_FS_BEGIN_PATH(0);
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[1], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_rmdir(t2_fs_loop(ctx), &fr->req, path, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "rmdir");
+    }
 
     int r = uv_fs_rmdir(NULL, &req, path, NULL);
 
@@ -321,6 +608,16 @@ static JSValue t2_fs_mkdir(JSContext *ctx, JSValue this_val, int argc, JSValue *
     if (JS_ToInt32(ctx, &mode, argv[1])) {
         JS_FreeCString(ctx, path);
         return JS_EXCEPTION;
+    }
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[2], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_mkdir(t2_fs_loop(ctx), &fr->req, path, mode, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "mkdir");
     }
 
     int r = uv_fs_mkdir(NULL, &req, path, mode, NULL);
@@ -350,6 +647,18 @@ static JSValue t2_fs_access(JSContext *ctx, JSValue this_val, int argc, JSValue 
         return JS_EXCEPTION;
     }
 
+    /* Asynchronously there is no "return false" option: fs.access reports
+     * through its callback, so the shouldThrow flag is a synchronous concern. */
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[3], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_access(t2_fs_loop(ctx), &fr->req, path, mode, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "access");
+    }
+
     int r = uv_fs_access(NULL, &req, path, mode, NULL);
 
     uv_fs_req_cleanup(&req);
@@ -377,6 +686,16 @@ static JSValue t2_fs_chmod(JSContext *ctx, JSValue this_val, int argc, JSValue *
         return JS_EXCEPTION;
     }
 
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[2], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_chmod(t2_fs_loop(ctx), &fr->req, path, mode, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "chmod");
+    }
+
     int r = uv_fs_chmod(NULL, &req, path, mode, NULL);
 
     T2_FS_END_PATH(r, "chmod");
@@ -389,6 +708,16 @@ static JSValue t2_fs_chmod(JSContext *ctx, JSValue this_val, int argc, JSValue *
 
 static JSValue t2_fs_readlink(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
     T2_FS_BEGIN_PATH(0);
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[1], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_readlink(t2_fs_loop(ctx), &fr->req, path, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "readlink");
+    }
 
     int r = uv_fs_readlink(NULL, &req, path, NULL);
 
@@ -404,6 +733,16 @@ static JSValue t2_fs_readlink(JSContext *ctx, JSValue this_val, int argc, JSValu
 
 static JSValue t2_fs_mkdtemp(JSContext *ctx, JSValue this_val, int argc, JSValue *argv) {
     T2_FS_BEGIN_PATH(0);
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[1], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_mkdtemp(t2_fs_loop(ctx), &fr->req, path, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "mkdtemp");
+    }
 
     int r = uv_fs_mkdtemp(NULL, &req, path, NULL);
 
@@ -421,24 +760,24 @@ static JSValue t2_fs_mkdtemp(JSContext *ctx, JSValue this_val, int argc, JSValue
 
 /* rename, link, symlink and copyfile all take a source and a destination, and
  * Node names both in the error: "ENOENT: ..., rename '/a' -> '/b'". */
-typedef int (*t2_two_path_fn)(uv_fs_t *req, const char *a, const char *b, int flags);
+typedef int (*t2_two_path_fn)(uv_loop_t *loop, uv_fs_t *req, const char *a, const char *b, int flags, uv_fs_cb cb);
 
-static int t2_call_rename(uv_fs_t *req, const char *a, const char *b, int flags) {
+static int t2_call_rename(uv_loop_t *loop, uv_fs_t *req, const char *a, const char *b, int flags, uv_fs_cb cb) {
     (void) flags;
-    return uv_fs_rename(NULL, req, a, b, NULL);
+    return uv_fs_rename(loop, req, a, b, cb);
 }
 
-static int t2_call_link(uv_fs_t *req, const char *a, const char *b, int flags) {
+static int t2_call_link(uv_loop_t *loop, uv_fs_t *req, const char *a, const char *b, int flags, uv_fs_cb cb) {
     (void) flags;
-    return uv_fs_link(NULL, req, a, b, NULL);
+    return uv_fs_link(loop, req, a, b, cb);
 }
 
-static int t2_call_symlink(uv_fs_t *req, const char *a, const char *b, int flags) {
-    return uv_fs_symlink(NULL, req, a, b, flags, NULL);
+static int t2_call_symlink(uv_loop_t *loop, uv_fs_t *req, const char *a, const char *b, int flags, uv_fs_cb cb) {
+    return uv_fs_symlink(loop, req, a, b, flags, cb);
 }
 
-static int t2_call_copyfile(uv_fs_t *req, const char *a, const char *b, int flags) {
-    return uv_fs_copyfile(NULL, req, a, b, flags, NULL);
+static int t2_call_copyfile(uv_loop_t *loop, uv_fs_t *req, const char *a, const char *b, int flags, uv_fs_cb cb) {
+    return uv_fs_copyfile(loop, req, a, b, flags, cb);
 }
 
 static JSValue t2_two_path(JSContext *ctx, JSValue *argv, t2_two_path_fn fn, const char *syscall) {
@@ -463,8 +802,19 @@ static JSValue t2_two_path(JSContext *ctx, JSValue *argv, t2_two_path_fn fn, con
         return JS_EXCEPTION;
     }
 
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[3], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = fn(t2_fs_loop(ctx), &fr->req, a, b, flags, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, a);
+        JS_FreeCString(ctx, b);
+
+        return t2_fs_async_end(ctx, fr, ar, syscall);
+    }
+
     uv_fs_t req;
-    int r = fn(&req, a, b, flags);
+    int r = fn(NULL, &req, a, b, flags, NULL);
 
     uv_fs_req_cleanup(&req);
 
@@ -506,6 +856,14 @@ static JSValue t2_fs_ftruncate(JSContext *ctx, JSValue this_val, int argc, JSVal
         return JS_EXCEPTION;
     }
 
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[2], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_ftruncate(t2_fs_loop(ctx), &fr->req, fd, len, t2_fs_async_cb);
+
+        return t2_fs_async_end(ctx, fr, ar, "ftruncate");
+    }
+
     uv_fs_t req;
     int r = uv_fs_ftruncate(NULL, &req, fd, len, NULL);
 
@@ -525,14 +883,25 @@ static JSValue t2_fs_fsync(JSContext *ctx, JSValue this_val, int argc, JSValue *
         return JS_EXCEPTION;
     }
 
+    int datasync = JS_ToBool(ctx, argv[1]);
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[2], JS_UNDEFINED, 0);
+
+    if (fr) {
+        uv_loop_t *loop = t2_fs_loop(ctx);
+        int ar = datasync ? uv_fs_fdatasync(loop, &fr->req, fd, t2_fs_async_cb)
+                          : uv_fs_fsync(loop, &fr->req, fd, t2_fs_async_cb);
+
+        return t2_fs_async_end(ctx, fr, ar, datasync ? "fdatasync" : "fsync");
+    }
+
     uv_fs_t req;
-    int r = JS_ToBool(ctx, argv[1]) ? uv_fs_fdatasync(NULL, &req, fd, NULL)
-                                    : uv_fs_fsync(NULL, &req, fd, NULL);
+    int r = datasync ? uv_fs_fdatasync(NULL, &req, fd, NULL) : uv_fs_fsync(NULL, &req, fd, NULL);
 
     uv_fs_req_cleanup(&req);
 
     if (r < 0) {
-        return t2_throw_uv(ctx, r, "fsync", NULL);
+        return t2_throw_uv(ctx, r, datasync ? "fdatasync" : "fsync", NULL);
     }
 
     return JS_UNDEFINED;
@@ -546,6 +915,16 @@ static JSValue t2_fs_utime(JSContext *ctx, JSValue this_val, int argc, JSValue *
     if (JS_ToFloat64(ctx, &atime, argv[1]) || JS_ToFloat64(ctx, &mtime, argv[2])) {
         JS_FreeCString(ctx, path);
         return JS_EXCEPTION;
+    }
+
+    t2_fs_req_t *fr = t2_fs_async_begin(ctx, argv[3], JS_UNDEFINED, 0);
+
+    if (fr) {
+        int ar = uv_fs_utime(t2_fs_loop(ctx), &fr->req, path, atime, mtime, t2_fs_async_cb);
+
+        JS_FreeCString(ctx, path);
+
+        return t2_fs_async_end(ctx, fr, ar, "utime");
     }
 
     int r = uv_fs_utime(NULL, &req, path, atime, mtime, NULL);
@@ -616,31 +995,34 @@ static JSValue t2_fs_constants(JSContext *ctx) {
 void t2_register_fs(JSContext *ctx, JSValue natives) {
     JSValue fs = JS_NewObjectProto(ctx, JS_NULL);
 
+/* The declared arity includes the trailing callback slot. QuickJS pads argv to
+ * the declared length with undefined, so a synchronous call still finds a
+ * readable (non-function) value where the callback would be. */
 #define T2_FN(name, fn, arity) \
     JS_SetPropertyStr(ctx, fs, name, JS_NewCFunction(ctx, fn, name, arity))
 
-    T2_FN("open", t2_fs_open, 3);
-    T2_FN("close", t2_fs_close, 1);
-    T2_FN("read", t2_fs_read, 5);
-    T2_FN("write", t2_fs_write, 5);
-    T2_FN("stat", t2_fs_stat, 1);
-    T2_FN("lstat", t2_fs_lstat, 1);
-    T2_FN("fstat", t2_fs_fstat, 1);
-    T2_FN("readdir", t2_fs_readdir, 2);
-    T2_FN("unlink", t2_fs_unlink, 1);
-    T2_FN("rmdir", t2_fs_rmdir, 1);
-    T2_FN("mkdir", t2_fs_mkdir, 2);
-    T2_FN("access", t2_fs_access, 3);
-    T2_FN("chmod", t2_fs_chmod, 2);
-    T2_FN("readlink", t2_fs_readlink, 1);
-    T2_FN("mkdtemp", t2_fs_mkdtemp, 1);
-    T2_FN("rename", t2_fs_rename, 3);
-    T2_FN("link", t2_fs_link, 3);
-    T2_FN("symlink", t2_fs_symlink, 3);
-    T2_FN("copyfile", t2_fs_copyfile, 3);
-    T2_FN("ftruncate", t2_fs_ftruncate, 2);
-    T2_FN("fsync", t2_fs_fsync, 2);
-    T2_FN("utime", t2_fs_utime, 3);
+    T2_FN("open", t2_fs_open, 4);
+    T2_FN("close", t2_fs_close, 2);
+    T2_FN("read", t2_fs_read, 6);
+    T2_FN("write", t2_fs_write, 6);
+    T2_FN("stat", t2_fs_stat, 2);
+    T2_FN("lstat", t2_fs_lstat, 2);
+    T2_FN("fstat", t2_fs_fstat, 2);
+    T2_FN("readdir", t2_fs_readdir, 3);
+    T2_FN("unlink", t2_fs_unlink, 2);
+    T2_FN("rmdir", t2_fs_rmdir, 2);
+    T2_FN("mkdir", t2_fs_mkdir, 3);
+    T2_FN("access", t2_fs_access, 4);
+    T2_FN("chmod", t2_fs_chmod, 3);
+    T2_FN("readlink", t2_fs_readlink, 2);
+    T2_FN("mkdtemp", t2_fs_mkdtemp, 2);
+    T2_FN("rename", t2_fs_rename, 4);
+    T2_FN("link", t2_fs_link, 4);
+    T2_FN("symlink", t2_fs_symlink, 4);
+    T2_FN("copyfile", t2_fs_copyfile, 4);
+    T2_FN("ftruncate", t2_fs_ftruncate, 3);
+    T2_FN("fsync", t2_fs_fsync, 3);
+    T2_FN("utime", t2_fs_utime, 4);
 
 #undef T2_FN
 

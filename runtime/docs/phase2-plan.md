@@ -20,15 +20,17 @@ being the thing the board actually runs.
 
 ## 0. Status
 
-**Step 1a — the synchronous half of `fs` — is done**, along with `constants`
-(§2a). Seven suites pass on x86-64 and on mipsel under QEMU; the cross-built
-binary is 6,316,040 bytes, 32,772 more than Phase 1's, against an 8 MB gate.
-Next is step 1b, the callback layer, which is where patch 0004 is first needed.
+**Steps 1a and 1b are done**: `fs` has all three surfaces — synchronous,
+callback and `promises` — along with `constants` (§2a). Patch 0004 has landed on
+the fork (`t2/v26.6.0+tessel.4`, d6b37e3a). Seven suites pass on x86-64 and on
+mipsel under QEMU; the cross-built binary is 6,332,424 bytes, 49,156 more than
+Phase 1's, against an 8 MB gate. Next is `fs.createReadStream`/`createWriteStream`,
+which finishes step 1, and then `net`.
 
 | | Eager | Lazy |
 |---|---|---|
-| Kernel | 33,301 B | — |
-| Core modules (Phase 1's seven, plus `fs` and `constants`) | — | 93,313 B |
+| Kernel | 33,429 B | — |
+| Core modules (Phase 1's seven, plus `fs` and `constants`) | — | 103,701 B |
 
 ## 1. What the floor actually is
 

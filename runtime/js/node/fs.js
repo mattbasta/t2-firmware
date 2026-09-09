@@ -1,15 +1,16 @@
-// node:fs — the synchronous surface.
+// node:fs — all three surfaces.
 //
 // A thin shell over the uv_fs_* primitives in runtime/src/fs.c. Everything that
 // is shaping rather than syscall lives here: flag strings, encodings, Stats and
 // Dirent, recursive mkdir and rm, and the argument coercions Node performs
 // before it reaches the kernel.
 //
-// The callback and promise halves land on the same primitives — uv_fs_* runs on
-// the threadpool when handed a callback — and are the next step of Phase 2; see
-// runtime/docs/phase2-plan.md §2. Until they exist, the async names are absent
-// rather than faked: a writeFile that is secretly synchronous would stall the
-// loop on a 580 MHz core with slow flash, and would be discovered late.
+// All three halves land on one set of primitives, because uv_fs_* is one API
+// with a switch: hand it a callback and the work runs on libuv's threadpool,
+// hand it none and it runs inline. So the callback layer here is genuinely
+// asynchronous rather than a synchronous call hidden behind setImmediate, which
+// on a 580 MHz core with slow flash would stall the loop on every read; and
+// fs.promises is a wrapper over the callback layer, as it is in Node.
 
 'use strict';
 
@@ -138,6 +139,40 @@ function getFd(value) {
     }
 
     return value;
+}
+
+// --- callback plumbing ------------------------------------------------------
+
+// Every callback handed to the binding is wrapped. An exception thrown inside a
+// user callback is an uncaught exception in Node — it reaches
+// process.on('uncaughtException') and otherwise ends the process — and C has no
+// business deciding that, so the policy stays here and reuses the bootstrap's
+// own handler.
+function guard(callback) {
+    return function (...args) {
+        try {
+            callback(...args);
+        } catch (err) {
+            __native.handleUncaught(err);
+        }
+    };
+}
+
+function getCallback(callback) {
+    if (typeof callback !== 'function') {
+        throw invalidArg('cb', 'function', callback);
+    }
+
+    return callback;
+}
+
+// Node lets the options argument be omitted in favour of the callback.
+function optionsAndCallback(options, callback, defaults) {
+    if (typeof options === 'function') {
+        return [defaults, getCallback(options)];
+    }
+
+    return [getOptions(options, defaults), getCallback(callback)];
 }
 
 // --- Stats ------------------------------------------------------------------
@@ -672,12 +707,645 @@ function utimesSync(path, atime, mtime) {
     binding.utime(getPath(path), toUnixTime(atime), toUnixTime(mtime));
 }
 
+// --- the callback surface ---------------------------------------------------
+//
+// These map one-to-one onto the binding, which dispatches to the threadpool the
+// moment it sees a function in the callback slot.
+
+function open(path, flags, mode, callback) {
+    if (typeof flags === 'function') {
+        callback = flags;
+        flags = 'r';
+        mode = 0o666;
+    } else if (typeof mode === 'function') {
+        callback = mode;
+        mode = 0o666;
+    }
+
+    binding.open(getPath(path), stringToFlags(flags), mode, guard(getCallback(callback)));
+}
+
+function close(fd, callback) {
+    binding.close(getFd(fd), guard(getCallback(callback)));
+}
+
+function read(fd, buffer, offset, length, position, callback) {
+    // read(fd, buffer, options, callback) and read(fd, callback) both exist.
+    if (typeof buffer === 'function') {
+        callback = buffer;
+        buffer = Buffer.alloc(16384);
+        offset = 0;
+        length = buffer.byteLength;
+        position = null;
+    } else if (typeof offset === 'object' && offset !== null) {
+        callback = length;
+        ({ offset = 0, length = buffer.byteLength - offset, position = null } = offset);
+    }
+
+    getFd(fd);
+
+    binding.read(
+        fd,
+        toUint8Array(buffer),
+        offset ?? 0,
+        length ?? buffer.byteLength - (offset ?? 0),
+        position ?? -1,
+        guard(getCallback(callback))
+    );
+}
+
+function write(fd, data, offsetOrPosition, lengthOrEncoding, position, callback) {
+    getFd(fd);
+
+    if (typeof data === 'string') {
+        // write(fd, string[, position[, encoding]], callback)
+        if (typeof offsetOrPosition === 'function') {
+            callback = offsetOrPosition;
+            offsetOrPosition = null;
+            lengthOrEncoding = 'utf8';
+        } else if (typeof lengthOrEncoding === 'function') {
+            callback = lengthOrEncoding;
+            lengthOrEncoding = 'utf8';
+        }
+
+        const bytes = Buffer.from(data, lengthOrEncoding || 'utf8');
+
+        binding.write(fd, bytes, 0, bytes.length, offsetOrPosition ?? -1, guard(getCallback(callback)));
+
+        return;
+    }
+
+    if (typeof offsetOrPosition === 'function') {
+        callback = offsetOrPosition;
+        offsetOrPosition = 0;
+        lengthOrEncoding = null;
+        position = null;
+    } else if (typeof lengthOrEncoding === 'function') {
+        callback = lengthOrEncoding;
+        lengthOrEncoding = null;
+        position = null;
+    } else if (typeof position === 'function') {
+        callback = position;
+        position = null;
+    }
+
+    const bytes = toUint8Array(data);
+    const offset = offsetOrPosition ?? 0;
+
+    binding.write(
+        fd,
+        bytes,
+        offset,
+        lengthOrEncoding ?? bytes.byteLength - offset,
+        position ?? -1,
+        guard(getCallback(callback))
+    );
+}
+
+function statCallback(callback) {
+    return guard((err, raw) => (err ? callback(err) : callback(null, new Stats(raw))));
+}
+
+function stat(path, options, callback) {
+    const [, cb] = optionsAndCallback(options, callback, {});
+
+    binding.stat(getPath(path), statCallback(cb));
+}
+
+function lstat(path, options, callback) {
+    const [, cb] = optionsAndCallback(options, callback, {});
+
+    binding.lstat(getPath(path), statCallback(cb));
+}
+
+function fstat(fd, options, callback) {
+    const [, cb] = optionsAndCallback(options, callback, {});
+
+    binding.fstat(getFd(fd), statCallback(cb));
+}
+
+function readdir(path, options, callback) {
+    const [{ encoding, withFileTypes }, cb] = optionsAndCallback(options, callback, {
+        encoding: 'utf8',
+        withFileTypes: false
+    });
+
+    const dir = getPath(path);
+
+    binding.readdir(dir, withFileTypes, guard((err, entries) => {
+        if (err) {
+            cb(err);
+
+            return;
+        }
+
+        if (withFileTypes) {
+            cb(null, entries.map(e => new Dirent(e.name, e.type, dir)));
+        } else if (encoding === 'buffer') {
+            cb(null, entries.map(name => Buffer.from(name, 'utf8')));
+        } else {
+            cb(null, entries);
+        }
+    }));
+}
+
+function unlink(path, callback) {
+    binding.unlink(getPath(path), guard(getCallback(callback)));
+}
+
+function rename(from, to, callback) {
+    binding.rename(getPath(from, 'oldPath'), getPath(to, 'newPath'), 0, guard(getCallback(callback)));
+}
+
+function link(from, to, callback) {
+    binding.link(getPath(from, 'existingPath'), getPath(to, 'newPath'), 0, guard(getCallback(callback)));
+}
+
+function symlink(target, path, type, callback) {
+    if (typeof type === 'function') {
+        callback = type;
+    }
+
+    binding.symlink(getPath(target, 'target'), getPath(path), 0, guard(getCallback(callback)));
+}
+
+function copyFile(from, to, mode, callback) {
+    if (typeof mode === 'function') {
+        callback = mode;
+        mode = 0;
+    }
+
+    binding.copyfile(getPath(from, 'src'), getPath(to, 'dest'), mode, guard(getCallback(callback)));
+}
+
+function readlink(path, options, callback) {
+    const [{ encoding }, cb] = optionsAndCallback(options, callback, { encoding: 'utf8' });
+
+    binding.readlink(getPath(path), guard((err, result) => {
+        if (err) {
+            cb(err);
+        } else {
+            cb(null, encoding === 'buffer' ? Buffer.from(result, 'utf8') : result);
+        }
+    }));
+}
+
+function realpath(path, options, callback) {
+    const [{ encoding }, cb] = optionsAndCallback(options, callback, { encoding: 'utf8' });
+
+    // realpathSync is a bootstrap primitive with no asynchronous form: the
+    // module loader needs it synchronously and nothing else calls it hot. A
+    // nextTick keeps the callback contract — never called in the same turn.
+    process.nextTick(() => {
+        let result;
+
+        try {
+            result = __native.realpathSync(getPath(path));
+        } catch (err) {
+            cb(err);
+
+            return;
+        }
+
+        cb(null, encoding === 'buffer' ? Buffer.from(result, 'utf8') : result);
+    });
+}
+
+realpath.native = realpath;
+
+function mkdtemp(prefix, options, callback) {
+    const [{ encoding }, cb] = optionsAndCallback(options, callback, { encoding: 'utf8' });
+
+    binding.mkdtemp(`${prefix}XXXXXX`, guard((err, result) => {
+        if (err) {
+            cb(err);
+        } else {
+            cb(null, encoding === 'buffer' ? Buffer.from(result, 'utf8') : result);
+        }
+    }));
+}
+
+function chmod(path, mode, callback) {
+    binding.chmod(getPath(path), mode, guard(getCallback(callback)));
+}
+
+function fsync(fd, callback) {
+    binding.fsync(getFd(fd), false, guard(getCallback(callback)));
+}
+
+function fdatasync(fd, callback) {
+    binding.fsync(getFd(fd), true, guard(getCallback(callback)));
+}
+
+function ftruncate(fd, len, callback) {
+    if (typeof len === 'function') {
+        callback = len;
+        len = 0;
+    }
+
+    binding.ftruncate(getFd(fd), len, guard(getCallback(callback)));
+}
+
+function truncate(path, len, callback) {
+    if (typeof len === 'function') {
+        callback = len;
+        len = 0;
+    }
+
+    const cb = getCallback(callback);
+
+    open(path, 'r+', 0o666, (err, fd) => {
+        if (err) {
+            cb(err);
+
+            return;
+        }
+
+        ftruncate(fd, len, truncErr => close(fd, closeErr => cb(truncErr || closeErr)));
+    });
+}
+
+function utimes(path, atime, mtime, callback) {
+    binding.utime(getPath(path), toUnixTime(atime), toUnixTime(mtime), guard(getCallback(callback)));
+}
+
+function access(path, mode, callback) {
+    if (typeof mode === 'function') {
+        callback = mode;
+        mode = constants.F_OK;
+    }
+
+    binding.access(getPath(path), mode, false, guard(getCallback(callback)));
+}
+
+// Deprecated in Node since v1, still called by era code, and the one callback
+// in fs that takes no error argument.
+function exists(path, callback) {
+    const cb = getCallback(callback);
+
+    access(path, constants.F_OK, err => cb(!err));
+}
+
+function mkdir(path, options, callback) {
+    const opts = typeof options === 'number' ? { mode: options } : options;
+    const [{ recursive = false, mode = 0o777 }, cb] = optionsAndCallback(opts, callback, {});
+    const dir = getPath(path);
+
+    if (!recursive) {
+        binding.mkdir(dir, mode, guard(cb));
+
+        return;
+    }
+
+    // Same shape as the synchronous version: walk up to the first existing
+    // ancestor, then create back down, reporting the topmost one created.
+    const resolved = pathModule.resolve(dir);
+
+    const walkUp = (current, missing) => {
+        // The asynchronous form reports through the error argument, not a
+        // boolean return: no error means the directory is already there.
+        binding.access(current, constants.F_OK, false, guard(err => {
+            if (!err) {
+                createDown(missing, missing.length - 1, undefined);
+
+                return;
+            }
+
+            missing.push(current);
+
+            const parent = pathModule.dirname(current);
+
+            if (parent === current) {
+                createDown(missing, missing.length - 1, undefined);
+            } else {
+                walkUp(parent, missing);
+            }
+        }));
+    };
+
+    const createDown = (missing, index, first) => {
+        if (index < 0) {
+            cb(null, first);
+
+            return;
+        }
+
+        binding.mkdir(missing[index], mode, guard(err => {
+            if (err && err.code !== 'EEXIST') {
+                cb(err);
+
+                return;
+            }
+
+            createDown(missing, index - 1, first ?? (err ? undefined : missing[index]));
+        }));
+    };
+
+    walkUp(resolved, []);
+}
+
+function rmdir(path, options, callback) {
+    if (typeof options === 'function') {
+        callback = options;
+        options = undefined;
+    }
+
+    if (options && options.recursive !== undefined) {
+        throw new TypeError(
+            `The property 'options.recursive' is no longer supported. Received ${options.recursive}`
+        );
+    }
+
+    binding.rmdir(getPath(path), guard(getCallback(callback)));
+}
+
+function rm(path, options, callback) {
+    const [{ recursive = false, force = false }, cb] = optionsAndCallback(options, callback, {});
+    const target = getPath(path);
+
+    binding.lstat(target, guard((err, raw) => {
+        if (err) {
+            cb(force && err.code === 'ENOENT' ? null : err);
+
+            return;
+        }
+
+        if ((raw.mode & constants.S_IFMT) !== constants.S_IFDIR) {
+            binding.unlink(target, guard(cb));
+
+            return;
+        }
+
+        if (!recursive) {
+            cb(nodeError('ERR_FS_EISDIR', 'Path is a directory', 'rm', target));
+
+            return;
+        }
+
+        binding.readdir(target, false, guard((readErr, names) => {
+            if (readErr) {
+                cb(readErr);
+
+                return;
+            }
+
+            const next = index => {
+                if (index >= names.length) {
+                    binding.rmdir(target, guard(cb));
+
+                    return;
+                }
+
+                rm(pathModule.join(target, names[index]), { recursive: true, force }, childErr => {
+                    if (childErr) {
+                        cb(childErr);
+                    } else {
+                        next(index + 1);
+                    }
+                });
+            };
+
+            next(0);
+        }));
+    }));
+}
+
+// --- whole files, asynchronously --------------------------------------------
+
+function readFile(path, options, callback) {
+    const [{ encoding, flag }, cb] = optionsAndCallback(options, callback, { encoding: null, flag: 'r' });
+    const isFd = typeof path === 'number';
+
+    const withFd = fd => {
+        const done = (err, data) => {
+            const finish = () => (err ? cb(err) : cb(null, encoding ? data.toString(encoding) : data));
+
+            if (isFd) {
+                finish();
+            } else {
+                binding.close(fd, guard(closeErr => {
+                    if (!err && closeErr) {
+                        err = closeErr;
+                    }
+
+                    finish();
+                }));
+            }
+        };
+
+        binding.fstat(fd, guard((statErr, raw) => {
+            if (statErr) {
+                done(statErr);
+
+                return;
+            }
+
+            const size = (raw.mode & constants.S_IFMT) === constants.S_IFREG ? raw.size : 0;
+
+            // Sized and unsized files take different paths for the reason
+            // readAll does: sysfs reports zero and yields bytes anyway.
+            if (size > 0) {
+                const buf = Buffer.allocUnsafe(size);
+
+                const step = read => {
+                    if (read >= size) {
+                        done(null, buf);
+
+                        return;
+                    }
+
+                    binding.read(fd, buf, read, size - read, -1, guard((readErr, n) => {
+                        if (readErr) {
+                            done(readErr);
+                        } else if (n === 0) {
+                            done(null, buf.slice(0, read));
+                        } else {
+                            step(read + n);
+                        }
+                    }));
+                };
+
+                step(0);
+
+                return;
+            }
+
+            const chunks = [];
+            let total = 0;
+
+            const step = () => {
+                const buf = Buffer.allocUnsafe(CHUNK);
+
+                binding.read(fd, buf, 0, CHUNK, -1, guard((readErr, n) => {
+                    if (readErr) {
+                        done(readErr);
+                    } else if (n === 0) {
+                        done(null, chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, total));
+                    } else {
+                        chunks.push(n === CHUNK ? buf : buf.slice(0, n));
+                        total += n;
+                        step();
+                    }
+                }));
+            };
+
+            step();
+        }));
+    };
+
+    if (isFd) {
+        withFd(path);
+
+        return;
+    }
+
+    binding.open(getPath(path), stringToFlags(flag), 0o666, guard((err, fd) => {
+        if (err) {
+            cb(err);
+        } else {
+            withFd(fd);
+        }
+    }));
+}
+
+function writeFileImpl(path, data, options, callback, defaultFlag) {
+    const [{ encoding, mode, flag }, cb] = optionsAndCallback(options, callback, {
+        encoding: 'utf8',
+        mode: 0o666,
+        flag: defaultFlag
+    });
+
+    const bytes = typeof data === 'string' ? Buffer.from(data, encoding || 'utf8') : toUint8Array(data);
+    const isFd = typeof path === 'number';
+
+    const withFd = fd => {
+        const done = err => {
+            if (isFd) {
+                cb(err);
+            } else {
+                binding.close(fd, guard(closeErr => cb(err || closeErr)));
+            }
+        };
+
+        const step = written => {
+            if (written >= bytes.byteLength) {
+                done(null);
+
+                return;
+            }
+
+            binding.write(fd, bytes, written, bytes.byteLength - written, -1, guard((err, n) => {
+                if (err) {
+                    done(err);
+                } else if (n === 0) {
+                    done(null);
+                } else {
+                    step(written + n);
+                }
+            }));
+        };
+
+        step(0);
+    };
+
+    if (isFd) {
+        withFd(path);
+
+        return;
+    }
+
+    binding.open(getPath(path), stringToFlags(flag), mode, guard((err, fd) => {
+        if (err) {
+            cb(err);
+        } else {
+            withFd(fd);
+        }
+    }));
+}
+
+function writeFile(path, data, options, callback) {
+    writeFileImpl(path, data, options, callback, 'w');
+}
+
+function appendFile(path, data, options, callback) {
+    writeFileImpl(path, data, options, callback, 'a');
+}
+
+// --- fs.promises -------------------------------------------------------------
+//
+// A wrapper over the callback layer, as it is in Node — not a third
+// implementation. read and write are the two whose callbacks carry a second
+// result, and so the two that resolve to an object.
+
+function promisify(fn) {
+    return (...args) => new Promise((resolve, reject) => {
+        fn(...args, (err, result) => (err ? reject(err) : resolve(result)));
+    });
+}
+
+const promises = {
+    access: promisify(access),
+    appendFile: promisify(appendFile),
+    chmod: promisify(chmod),
+    copyFile: promisify(copyFile),
+    lstat: promisify(lstat),
+    link: promisify(link),
+    mkdir: promisify(mkdir),
+    mkdtemp: promisify(mkdtemp),
+    readFile: promisify(readFile),
+    readdir: promisify(readdir),
+    readlink: promisify(readlink),
+    realpath: promisify(realpath),
+    rename: promisify(rename),
+    rm: promisify(rm),
+    rmdir: promisify(rmdir),
+    stat: promisify(stat),
+    symlink: promisify(symlink),
+    truncate: promisify(truncate),
+    unlink: promisify(unlink),
+    utimes: promisify(utimes),
+    writeFile: promisify(writeFile),
+    constants
+};
+
 // --- exports ----------------------------------------------------------------
 
 module.exports = {
     constants,
+    promises,
     Stats,
     Dirent,
+
+    access,
+    appendFile,
+    chmod,
+    close,
+    copyFile,
+    exists,
+    fdatasync,
+    fstat,
+    fsync,
+    ftruncate,
+    link,
+    lstat,
+    mkdir,
+    mkdtemp,
+    open,
+    read,
+    readFile,
+    readdir,
+    readlink,
+    realpath,
+    rename,
+    rm,
+    rmdir,
+    stat,
+    symlink,
+    truncate,
+    unlink,
+    utimes,
+    write,
+    writeFile,
 
     accessSync,
     appendFileSync,

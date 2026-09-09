@@ -25,7 +25,7 @@
 /* Node-shaped error, message included: era code branches on `err.code`, but it
  * also prints these, and "ENOENT: no such file or directory, open '/x/y.js'" is
  * the text a decade of Node users can read at a glance. */
-JSValue t2_throw_uv2(JSContext *ctx, int r, const char *syscall, const char *path, const char *dest) {
+JSValue t2_new_uv_error(JSContext *ctx, int r, const char *syscall, const char *path, const char *dest) {
     char message[2 * PATH_MAX + 128];
 
     if (path && dest) {
@@ -58,7 +58,11 @@ JSValue t2_throw_uv2(JSContext *ctx, int r, const char *syscall, const char *pat
         JS_SetPropertyStr(ctx, err, "dest", JS_NewString(ctx, dest));
     }
 
-    return JS_Throw(ctx, err);
+    return err;
+}
+
+JSValue t2_throw_uv2(JSContext *ctx, int r, const char *syscall, const char *path, const char *dest) {
+    return JS_Throw(ctx, t2_new_uv_error(ctx, r, syscall, path, dest));
 }
 
 JSValue t2_throw_uv(JSContext *ctx, int r, const char *syscall, const char *path) {
