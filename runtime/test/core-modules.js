@@ -170,5 +170,24 @@ eq(url.resolve('http://a.com/one/two', '/root'), 'http://a.com/root', 'url.resol
 eq(url.URL === URL, true, 'url re-exports WHATWG URL');
 eq(new url.URL('http://x/p').pathname, '/p', 'WHATWG URL still works');
 
+// --- laziness ---------------------------------------------------------------
+//
+// Not a Node behavior, so it lives here rather than in the differential fs
+// suite. Every core module is a separate bytecode blob that costs nothing until
+// something requires it (phase1-plan.md §3), and node:stream is the largest of
+// them. fs.createReadStream needs it, but fs itself must not: a program that
+// only calls fs.writeFileSync on a sysfs node should never deserialize the
+// stream bundle. What makes that true is that fs reaches for stream inside
+// getStreamClasses() and exposes the constructors as getters — so if someone
+// moves that require to the top of the file, this assertion is what notices.
+const fsModule = require('fs');
+const readStreamDescriptor = Object.getOwnPropertyDescriptor(fsModule, 'ReadStream');
+
+eq(typeof readStreamDescriptor.get, 'function', 'fs.ReadStream is deferred behind a getter');
+eq(readStreamDescriptor.value, undefined, 'fs.ReadStream is not a materialized value');
+eq(typeof fsModule.ReadStream, 'function', 'touching fs.ReadStream produces the constructor');
+eq(fsModule.ReadStream.prototype instanceof require('stream').Readable, true,
+    'fs.ReadStream extends the real stream.Readable');
+
 console.log(fail === 0 ? 'CORE MODULES: all pass' : `CORE MODULES: ${fail} FAILURES`);
 process.exitCode = fail === 0 ? 0 : 1;

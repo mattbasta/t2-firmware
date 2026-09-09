@@ -433,6 +433,87 @@ async function asyncTests() {
     await fs.promises.rm(pdir, { recursive: true });
     eq(fs.existsSync(pdir), false, 'promises rm');
 
+    // --- createReadStream / createWriteStream --------------------------------
+    const sfile = path.join(adir, 'stream.txt');
+
+    await new Promise((resolve, reject) => {
+        const ws = fs.createWriteStream(sfile);
+        const opened = [];
+
+        ws.on('open', fd => opened.push(typeof fd));
+        ws.on('error', reject);
+        ws.on('close', () => {
+            eq(opened.join(), 'number', "createWriteStream emits 'open' with a descriptor");
+            eq(ws.bytesWritten, 11, 'WriteStream.bytesWritten');
+            resolve();
+        });
+
+        ws.write('hello ');
+        ws.write('world');
+        ws.end();
+    });
+
+    eq(fs.readFileSync(sfile, 'utf8'), 'hello world', 'createWriteStream contents');
+
+    // cork/uncork routes through _writev, which is the batching path the SPI
+    // port depends on; here it just has to produce the same bytes.
+    await new Promise((resolve, reject) => {
+        const ws = fs.createWriteStream(path.join(adir, 'corked.txt'));
+
+        ws.on('error', reject);
+        ws.on('close', resolve);
+        ws.cork();
+        ws.write('a');
+        ws.write('b');
+        ws.write('c');
+        ws.uncork();
+        ws.end();
+    });
+
+    eq(fs.readFileSync(path.join(adir, 'corked.txt'), 'utf8'), 'abc', 'corked writes reach the file in order');
+
+    const streamed = await new Promise((resolve, reject) => {
+        const chunks = [];
+        const rs = fs.createReadStream(sfile, { encoding: 'utf8' });
+
+        rs.on('data', chunk => chunks.push(chunk));
+        rs.on('error', reject);
+        rs.on('end', () => resolve(chunks.join('')));
+    });
+
+    eq(streamed, 'hello world', 'createReadStream reads the whole file');
+
+    const sliced = await new Promise((resolve, reject) => {
+        const chunks = [];
+        const rs = fs.createReadStream(sfile, { start: 6, end: 10 });
+
+        rs.on('data', chunk => chunks.push(chunk));
+        rs.on('error', reject);
+        rs.on('end', () => resolve(Buffer.concat(chunks).toString()));
+    });
+
+    eq(sliced, 'world', 'createReadStream honors start and end');
+
+    await new Promise(resolve => {
+        const rs = fs.createReadStream(path.join(adir, 'nope'));
+
+        rs.on('error', err => {
+            eq(err.code, 'ENOENT', 'createReadStream on a missing file emits ENOENT');
+            resolve();
+        });
+    });
+
+    // piping one into the other, which is what era code actually does with these
+    await new Promise((resolve, reject) => {
+        const out = fs.createWriteStream(path.join(adir, 'piped.txt'));
+
+        out.on('error', reject);
+        out.on('close', resolve);
+        fs.createReadStream(sfile).pipe(out);
+    });
+
+    eq(fs.readFileSync(path.join(adir, 'piped.txt'), 'utf8'), 'hello world', 'read stream pipes into write stream');
+
     // --- recursive removal ---------------------------------------------------
     await rejects(call(fs.rm, path.join(adir, 'p')), 'ERR_FS_EISDIR', 'async rm on a directory');
     await call(fs.rm, path.join(adir, 'p'), { recursive: true });

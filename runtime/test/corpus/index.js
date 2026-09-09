@@ -97,6 +97,31 @@ eq(typeof legacyConstants.ENOENT, 'number', 'constants.ENOENT');
 eq(typeof legacyConstants.SIGTERM, 'number', 'constants.SIGTERM');
 eq(legacyConstants.O_RDONLY, require('fs').constants.O_RDONLY, 'constants agrees with fs.constants');
 
+// --- rimraf, over glob, over our async fs -----------------------------------
+//
+// The deepest third-party stack in the corpus: rimraf drives glob, which walks
+// with readdir/lstat/realpath, all of it on the callback layer. It is here
+// because it is the one package that exercises the asynchronous recursive path
+// the way real code does, rather than the way its author imagined.
+const rimraf = require('rimraf');
+const fsMod = require('fs');
+
+const tree = fsMod.mkdtempSync('/tmp/t2rimraf-');
+
+fsMod.mkdirSync(`${tree}/a/b/c`, { recursive: true });
+fsMod.writeFileSync(`${tree}/a/b/c/deep.txt`, 'deep');
+fsMod.writeFileSync(`${tree}/a/top.txt`, 'top');
+fsMod.symlinkSync(`${tree}/a/top.txt`, `${tree}/a/link.txt`);
+
+eq(fsMod.existsSync(`${tree}/a/b/c/deep.txt`), true, 'rimraf fixture built');
+
+// glob on its own first, so a failure says which layer broke
+const glob = require('glob');
+
+const globbed = glob.sync('**/*.txt', { cwd: tree }).sort();
+
+eq(globbed.join(), 'a/b/c/deep.txt,a/link.txt,a/top.txt', 'glob.sync walks the tree through our fs');
+
 // --- packages still gated on Phase 2 ----------------------------------------
 for (const [name, missing] of [['debug', 'tty']]) {
     try {
@@ -113,6 +138,13 @@ rsSource.pipe(rsSink).on('finish', () => {
     eq(piped.join(''), 'ab', 'readable-stream (npm) pipes on our runtime');
     eq(collected.join(''), 'héllo', 'iconv decodeStream reassembles a split multi-byte char');
 
-    console.log(fail === 0 ? 'CORPUS: all pass' : `CORPUS: ${fail} FAILURES`);
-    process.exitCode = fail === 0 ? 0 : 1;
+    // Asynchronous recursive removal, all the way down, through rimraf's own
+    // retry logic rather than ours.
+    rimraf(tree, err => {
+        eq(err, null, 'rimraf reports no error');
+        eq(fsMod.existsSync(tree), false, 'rimraf removed the tree');
+
+        console.log(fail === 0 ? 'CORPUS: all pass' : `CORPUS: ${fail} FAILURES`);
+        process.exitCode = fail === 0 ? 0 : 1;
+    });
 });

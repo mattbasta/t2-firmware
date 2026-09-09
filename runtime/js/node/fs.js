@@ -1271,6 +1271,259 @@ function appendFile(path, data, options, callback) {
     writeFileImpl(path, data, options, callback, 'a');
 }
 
+// --- fs.createReadStream / createWriteStream ---------------------------------
+//
+// Built on first use, not at require time. node:stream is the largest module in
+// the standard library, and the laziness rule in the Phase 1 plan says a program
+// must not pay for it until it asks: a blinky that calls fs.writeFileSync on a
+// sysfs node should never deserialize the stream bundle. Requiring it at the top
+// of this file would make every require('fs') do exactly that.
+
+let streamClasses;
+
+function getStreamClasses() {
+    if (streamClasses) {
+        return streamClasses;
+    }
+
+    const { Readable, Writable } = require('stream');
+
+    class ReadStream extends Readable {
+        constructor(streamPath, options) {
+            const opts = getOptions(options, {});
+
+            super({
+                highWaterMark: opts.highWaterMark ?? 64 * 1024,
+                encoding: opts.encoding ?? null,
+                autoDestroy: opts.autoDestroy ?? true,
+                emitClose: opts.emitClose ?? true
+            });
+
+            this.path = streamPath === null || streamPath === undefined ? null : getPath(streamPath);
+            this.flags = opts.flags ?? 'r';
+            this.mode = opts.mode ?? 0o666;
+            this.fd = opts.fd ?? null;
+            this.start = opts.start;
+            this.end = opts.end ?? Infinity;
+            this.autoClose = opts.autoClose ?? opts.fd === undefined;
+            this.bytesRead = 0;
+            this.pos = this.start;
+
+            if (this.fd === null) {
+                openStream(this);
+            } else {
+                process.nextTick(() => readyStream(this));
+            }
+        }
+
+        _read(size) {
+            if (this.fd === null) {
+                this.once('ready', () => this._read(size));
+
+                return;
+            }
+
+            // Node's `end` is inclusive, so the last byte is end - pos + 1 away.
+            let want = size;
+
+            if (this.end !== Infinity) {
+                const remaining = this.end - (this.pos ?? 0) + 1;
+
+                if (remaining <= 0) {
+                    this.push(null);
+
+                    return;
+                }
+
+                want = Math.min(want, remaining);
+            }
+
+            const buf = Buffer.allocUnsafe(want);
+
+            binding.read(this.fd, buf, 0, want, this.pos ?? -1, guard((err, bytesRead) => {
+                if (err) {
+                    this.destroy(err);
+
+                    return;
+                }
+
+                if (bytesRead === 0) {
+                    this.push(null);
+
+                    return;
+                }
+
+                this.bytesRead += bytesRead;
+
+                if (this.pos !== undefined) {
+                    this.pos += bytesRead;
+                }
+
+                this.push(bytesRead === want ? buf : buf.slice(0, bytesRead));
+            }));
+        }
+
+        _destroy(err, callback) {
+            closeStream(this, err, callback);
+        }
+
+        close(callback) {
+            if (callback) {
+                this.once('close', callback);
+            }
+
+            this.destroy();
+        }
+    }
+
+    class WriteStream extends Writable {
+        constructor(streamPath, options) {
+            const opts = getOptions(options, {});
+
+            super({
+                highWaterMark: opts.highWaterMark ?? 16 * 1024,
+                autoDestroy: opts.autoDestroy ?? true,
+                emitClose: opts.emitClose ?? true,
+                decodeStrings: false
+            });
+
+            this.path = streamPath === null || streamPath === undefined ? null : getPath(streamPath);
+            this.flags = opts.flags ?? 'w';
+            this.mode = opts.mode ?? 0o666;
+            this.fd = opts.fd ?? null;
+            this.start = opts.start;
+            this.autoClose = opts.autoClose ?? opts.fd === undefined;
+            this.bytesWritten = 0;
+            this.pos = this.start;
+            this.encoding = opts.encoding ?? 'utf8';
+
+            if (this.fd === null) {
+                openStream(this);
+            } else {
+                process.nextTick(() => readyStream(this));
+            }
+        }
+
+        _write(chunk, encoding, callback) {
+            if (this.fd === null) {
+                this.once('ready', () => this._write(chunk, encoding, callback));
+
+                return;
+            }
+
+            const bytes = typeof chunk === 'string'
+                ? Buffer.from(chunk, encoding === 'buffer' ? this.encoding : encoding || this.encoding)
+                : toUint8Array(chunk);
+
+            // uv_fs_write is allowed to write less than it was given.
+            const step = written => {
+                if (written >= bytes.byteLength) {
+                    callback();
+
+                    return;
+                }
+
+                binding.write(
+                    this.fd,
+                    bytes,
+                    written,
+                    bytes.byteLength - written,
+                    this.pos ?? -1,
+                    guard((err, n) => {
+                        if (err) {
+                            callback(err);
+
+                            return;
+                        }
+
+                        this.bytesWritten += n;
+
+                        if (this.pos !== undefined) {
+                            this.pos += n;
+                        }
+
+                        step(written + n);
+                    })
+                );
+            };
+
+            step(0);
+        }
+
+        // Corked writes arrive here as a batch. Joining them costs one copy and
+        // saves a syscall per chunk, which is the trade cork() exists to make.
+        _writev(chunks, callback) {
+            const buffers = chunks.map(({ chunk, encoding }) =>
+                (typeof chunk === 'string' ? Buffer.from(chunk, encoding || this.encoding) : toUint8Array(chunk)));
+
+            let total = 0;
+
+            for (const b of buffers) {
+                total += b.byteLength;
+            }
+
+            this._write(Buffer.concat(buffers, total), 'buffer', callback);
+        }
+
+        _destroy(err, callback) {
+            closeStream(this, err, callback);
+        }
+
+        close(callback) {
+            if (callback) {
+                this.once('close', callback);
+            }
+
+            this.end();
+        }
+    }
+
+    streamClasses = { ReadStream, WriteStream };
+
+    return streamClasses;
+}
+
+function readyStream(stream) {
+    stream.emit('open', stream.fd);
+    stream.emit('ready');
+}
+
+function openStream(stream) {
+    binding.open(stream.path, stringToFlags(stream.flags), stream.mode, guard((err, fd) => {
+        if (err) {
+            stream.destroy(err);
+
+            return;
+        }
+
+        stream.fd = fd;
+        readyStream(stream);
+    }));
+}
+
+function closeStream(stream, err, callback) {
+    const finish = closeErr => callback(err || closeErr || null);
+
+    if (stream.fd === null || !stream.autoClose) {
+        finish();
+
+        return;
+    }
+
+    const fd = stream.fd;
+
+    stream.fd = null;
+    binding.close(fd, guard(finish));
+}
+
+function createReadStream(path, options) {
+    return new (getStreamClasses().ReadStream)(path, options);
+}
+
+function createWriteStream(path, options) {
+    return new (getStreamClasses().WriteStream)(path, options);
+}
+
 // --- fs.promises -------------------------------------------------------------
 //
 // A wrapper over the callback layer, as it is in Node — not a third
@@ -1315,6 +1568,9 @@ module.exports = {
     promises,
     Stats,
     Dirent,
+
+    createReadStream,
+    createWriteStream,
 
     access,
     appendFile,
@@ -1378,3 +1634,16 @@ module.exports = {
     writeFileSync,
     writeSync
 };
+
+// Node exposes the constructors too. Getters rather than values, so touching
+// fs.ReadStream is what loads node:stream — not requiring fs.
+Object.defineProperty(module.exports, 'ReadStream', {
+    configurable: true,
+    enumerable: true,
+    get: () => getStreamClasses().ReadStream
+});
+Object.defineProperty(module.exports, 'WriteStream', {
+    configurable: true,
+    enumerable: true,
+    get: () => getStreamClasses().WriteStream
+});

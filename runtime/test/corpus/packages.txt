@@ -17,3 +17,17 @@ string_decoder 1.3.0 7d036900940345e423538371ae45b23bfaf4b454bc398c6ba604063b059
 debug 4.3.4 04922c9b2e37a6858df2b870a278d1d3a8aaad7ec4c3bd84427f0d53cbf28bcf
 ms 2.1.2 1157a6e30d3ffe1b9fcaf3a39caf159f8dc981199a3380c78ddd89f73bcefb48
 graceful-fs 4.2.11 3961374aa161e6fed80d6f4b6aaf2fb7eafd2c9e5be34e865b375f0114dd099c
+# rimraf and the glob tree beneath it: named by the strategy, gated on fs until
+# Phase 2 step 1. Between them they exercise readdir, lstat, realpath, unlink
+# and rmdir through code nobody here wrote.
+rimraf 3.0.2 5876c20fd84707b7056ec61ccee1a71e80fec1657650010bd4dac828bb977f52
+glob 7.2.3 f0a38eb1318c06cb55dc28f3f32d2df7379e155cefc6a1e5ecc7a0ddad194381
+fs.realpath 1.0.0 9e80cb8713125aa53df81a29626f7b81f26a9be1cd41840b3ccdcae4d52e8f9c
+inflight 1.0.6 5a9fdcf59874af6ad3b413b6815d5afaaea34939a3bee20e1e50f7830031889b
+minimatch 3.1.2 13964b10b60a3b66dd6eec90a2d39af28590721b8c9d1df8ff754f90b081a34d
+once 1.4.0 cf51460ba370c698f68b976e514d113497339ba018b6003e8e8eb569c6fccfcf
+path-is-absolute 1.0.1 6e6d709f1a56942514e4e2c2709b30c7b1ffa46fbed70e714904a3d63b01f75c
+wrappy 1.0.2 aff3730d91b7b1e143822956d14608f563163cf11b9d0ae602df1fe1e430fdfb
+brace-expansion 1.1.11 84bd645925eb665a04c19c66eb9da8499d9c17d0d62b4b979d085dcae99695da
+balanced-match 1.0.2 d854f7abdd0c7a8120cf381e0ad5f972cbd0255f5d987424bd672c8c4fcebcc1
+concat-map 0.0.1 35902dd620cf0058c49ea614120f18a889d984269a90381b7622e79c2cfe4261

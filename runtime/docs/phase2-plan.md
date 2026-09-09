@@ -20,17 +20,28 @@ being the thing the board actually runs.
 
 ## 0. Status
 
-**Steps 1a and 1b are done**: `fs` has all three surfaces — synchronous,
-callback and `promises` — along with `constants` (§2a). Patch 0004 has landed on
-the fork (`t2/v26.6.0+tessel.4`, d6b37e3a). Seven suites pass on x86-64 and on
-mipsel under QEMU; the cross-built binary is 6,332,424 bytes, 49,156 more than
-Phase 1's, against an 8 MB gate. Next is `fs.createReadStream`/`createWriteStream`,
-which finishes step 1, and then `net`.
+**Step 1 is done.** `fs` has all four surfaces — synchronous, callback,
+`promises`, and `createReadStream`/`createWriteStream` — along with `constants`
+(§2a). Patch 0004 has landed on the fork (`t2/v26.6.0+tessel.4`, d6b37e3a).
+Seven suites pass on x86-64 and on mipsel under QEMU; the cross-built binary is
+6,336,520 bytes, 53,252 more than Phase 1's, against an 8 MB gate. Next is
+`net`.
 
 | | Eager | Lazy |
 |---|---|---|
 | Kernel | 33,429 B | — |
-| Core modules (Phase 1's seven, plus `fs` and `constants`) | — | 103,701 B |
+| Core modules (Phase 1's seven, plus `fs` and `constants`) | — | 107,912 B |
+
+The corpus grew with it: `rimraf` over `glob` — eleven pinned packages — now
+runs on the callback layer, which is the deepest third-party stack in the
+suite and the one that walks a tree the way real code does.
+
+`fs` deliberately stops short of a few things, recorded here rather than
+discovered later: `fs.watch`/`watchFile` (txiki has a watcher, but nothing in
+the Tessel floor watches files), `fs.opendir`/`Dir`, `fs.cp`, the `chown`
+family, `readv`/`writev`, `statfs`, and `FileHandle` — so `fs.promises.open()`
+is absent while the rest of `fs.promises` is present. Each is small on top of
+the binding that exists; none is on the path to the gate.
 
 ## 1. What the floor actually is
 
